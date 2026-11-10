@@ -1,0 +1,66 @@
+# nightly-publish.yml — build-apk 成功后，把双 ABI 产物覆盖发布到固定 tag `nightly`
+#
+# 为什么要固定名：README 首页的三条直链（直连 + gh-proxy + ghfast）必须长期稳定，
+#   而 build-apk 产出的文件名带版本号（dsh-mobile-apk-v0.14.11-arm64.apk），每天都会变。
+#   这里统一改名为 dsh-mobile-apk-arm64.apk / dsh-mobile-apk-x86_64.apk 后 --clobber 覆盖。
+name: nightly-publish
+
+on:
+  workflow_run:
+    workflows: ["build-apk"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: nightly-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 下载本次构建的双 ABI 产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dsh-mobile-apk-*
+          merge-multiple: true
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 归一化文件名为固定直链名
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p publish
+          mapfile -t apks < <(find dist -type f -name '*.apk' | sort)
+          [ "${#apks[@]}" -gt 0 ] || { echo "::error::没有下载到 APK 产物"; exit 1; }
+          for f in "${apks[@]}"; do
+            case "$f" in
+              *x86_64*) out=dsh-mobile-apk-x86_64.apk ;;
+              *-arm64*) out=dsh-mobile-apk-arm64.apk ;;
+              *) echo "::warning::无法判定 ABI，跳过：$f"; continue ;;
+            esac
+            cp "$f" "publish/$out"
+          done
+          ls -l publish
+
+      - name: 覆盖发布到 nightly
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create nightly --repo "$GITHUB_REPOSITORY" \
+                 --title "每日自动构建（nightly）" \
+                 --prerelease \
+                 --notes "跟随上游自动构建的每日产物，覆盖更新。构建日志：$RUN_URL"
+          gh release upload nightly publish/*.apk --repo "$GITHUB_REPOSITORY" --clobber
+          echo "已更新 nightly：$RUN_URL"
