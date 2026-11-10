@@ -156,6 +156,26 @@ bash $K/tools/sim-upstream-merge.sh   # 上游合并三场景实证
 配置走 profile 的 patch 层，热生效。`writePolicy: 'ask'` 本就是为可审计设计的
 （每次写入走审批瀑布、被拒也留 `*-denied` 审计行），只在需要严格把关时切回 `ask`。
 
+### 改法（二选一）
+
+**推荐：设置页改。** memento 用 `ctx.configForms.get(entryId)` 注册了实时表单
+（`dsh.configForms` 由 `dsh-client-ui-settings` 提供，0.2.2-rc.1 实测在位），
+表单里的可编辑字段都是 `.volatile()`，提交后**热生效、不需要重启**。
+
+**备选：profile patch 写死。** 在 `$DSH_HOME/profiles/web/cordis.patch.yml` 末尾追加：
+
+```yaml
+- id: memento
+  config:
+    writePolicy: auto
+    language: zh
+```
+
+> 本 kit **不自动写这一条**，是刻意的：它会改 profile 的用户面 patch，
+> 而你那份 patch 里已经有 dsh-purge 的 permission 固定与 `autoApplyOnStart`，
+> 无谓的追加只增加与上游合并的冲突面。要固定行为时再手工加，加了也属「用户独有条目」，
+> 按 `FactoryProfilePatch.kt` 的「其它 live 独有条目原样保留」不会被动。
+
 ---
 
 ## 5. 载荷与可复现性
