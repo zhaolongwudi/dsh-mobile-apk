@@ -13,6 +13,9 @@
 name: build-apk
 
 on:
+  schedule:
+    # 北京时间 04:30（UTC 20:30）；daily-sync 04:00 同步，留 30 分钟余量
+    - cron: '30 20 * * *'
   workflow_dispatch:
     inputs:
       abi:
@@ -118,7 +121,7 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
 
       - name: 设置开发预览安装号
-        if: ${{ inputs.version_code != '' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version_code != '' }}
         shell: bash
         env:
           PREVIEW_CODE: ${{ inputs.version_code }}
