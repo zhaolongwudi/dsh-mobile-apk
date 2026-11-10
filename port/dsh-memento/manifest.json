@@ -1,0 +1,68 @@
+{
+  "name": "dsh-memento-port",
+  "purpose": "把 dsh-memento（跨会话长期记忆插件，本地 SQLite 存储）移植进 dsh-mobile-apk（com.dsharnessmobile.shell）的 web profile，并保证每日新构建物覆盖安装后仍在位；纯 JS 插件，不改宿主运行时树",
+  "package": {
+    "name": "dsh-memento",
+    "version": "0.5.30",
+    "source": "https://registry.npmjs.org/dsh-memento/-/dsh-memento-0.5.30.tgz"
+  },
+  "bundledDependencies": {},
+  "dependenciesNote": "dependencies 为空、无随包依赖、无原生模块。存储走 Node 内置 node:sqlite（DatabaseSync），检索默认 substring，不触语义依赖。",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.3",
+    "@deepseek-ai/dsh-session": ">=0.1.2-rc.1 <0.2.0 || >=0.1.5-alpha.1 <0.2.0 || >=0.1.6-0 <0.2.0 || >=0.1.7-0 <0.2.0 || >=0.2.0-0 <0.3.0 || >=0.2.1-0 <0.3.0 || >=0.2.2-0 <0.3.0",
+    "@deepseek-ai/dsh-settings": ">=0.1.2-rc.1 <0.2.0 || >=0.1.5-alpha.1 <0.2.0 || >=0.1.6-0 <0.2.0 || >=0.1.7-0 <0.2.0 || >=0.2.0-0 <0.3.0 || >=0.2.1-0 <0.3.0 || >=0.2.2-0 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.2-rc.1 <0.2.0 || >=0.1.5-alpha.1 <0.2.0 || >=0.1.6-0 <0.2.0 || >=0.1.7-0 <0.2.0 || >=0.2.0-0 <0.3.0 || >=0.2.1-0 <0.3.0 || >=0.2.2-0 <0.3.0",
+    "@deepseek-ai/schemastery": "^3.18.3"
+  },
+  "peerDependenciesNote": "全部由宿主运行时解析（profile 设 autoInstallPeers: false）。实测 0.2.2-rc.1 上 ctx.approval.request / ctx.tools.register / ctx.systemPrompt.section / ctx.settings(SettingsForms) / ctx.configForms.get 均存在。",
+  "engines": {
+    "node": "^22.19.0 || >=24.9.0",
+    "dsh": ">=0.1.2-rc.1 <0.2.0 || >=0.1.5-alpha.1 <0.2.0 || >=0.1.6-0 <0.2.0 || >=0.1.7-0 <0.2.0 || >=0.2.0-0 <0.3.0 || >=0.2.1-0 <0.3.0 || >=0.2.2-0 <0.3.0"
+  },
+  "runtime": "dsh 0.2.2-rc.1（随 APK 快照）；cordis 4.1.0；schemastery 3.19.0；Node v24.18.0（内置 node:sqlite 实测可用）",
+  "platforms": "纯宿主，无原生代码、无网络调用。实测 aarch64/arm64-v8a + Bionic 可跑。",
+  "payload": {
+    "file": "payload.tar.gz",
+    "sha256": "0c8d7ee3b5a9a3cb96981c782abe1df86f8bbec7b1d68812e7165a15be0ae008",
+    "bytes": 226887,
+    "entries": 46,
+    "layout": "node_modules/（仅 dsh-memento，纯 JS，无原生绑定、无符号链接）"
+  },
+  "mount": {
+    "kind": "bundle",
+    "layer": "dsh.profile.bundles",
+    "entryId": "memento",
+    "expectedEntryIds": [
+      "include:memento",
+      "memento"
+    ],
+    "patch": "dsh-memento/cordis.patch.yml（包内自带，随 bundle 自动应用：- insert: [{id: memento, name: dsh-memento}]）",
+    "clientHalf": {
+      "present": true,
+      "platform": "web",
+      "requiresInjection": false,
+      "note": "dsh.client = { platform: 'web', immediately: true }，未声明 inject 列表，故无需 profile patch 额外注入（与 dsh-purge 的 5 项 inject 不同）。"
+    }
+  },
+  "androidFixes": [],
+  "androidFixesNote": "**无需任何 Android 专用修复**。与 port/dsh-purge 的根本区别：dsh-memento 是纯 JS 插件，不改宿主运行时树（不涉及那 86 条宿主补丁），也不触碰 permission 预设推导，因此不存在 purge 那种「沙箱/审批默认值改动导致 dsh-permission-presets 构造函数抛错」的问题。",
+  "stateDirs": [
+    "$DSH_HOME/dsh-memento"
+  ],
+  "stateNote": "记忆库 memory.db（node:sqlite，WAL，0600）在 $DSH_HOME/dsh-memento/。属于未登记的用户数据目录，快照刷新时按用户数据保留。",
+  "configDefaults": {
+    "writePolicy": "ask",
+    "language": "en",
+    "snapshotOrder": -50,
+    "retrieval.vector": false,
+    "note": "开箱默认 writePolicy=ask（每次写记忆都弹审批）+ language=en。建议改为 auto + zh，否则体感会很别扭。配置走 profile 的 patch 层，热生效。"
+  },
+  "notTouched": [
+    "$FILES/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/**（宿主运行时树，本 kit 只读不写）",
+    "$DSH_HOME/cordis.patch.yml（除 install --enable 清理本插件隔离块外不写）",
+    "port/dsh-purge 与 port/jet-hub 的任何文件"
+  ],
+  "verifiedAt": "2026-11-10T23:20+08:00",
+  "verifiedHow": "① semver：dsh-memento 的 engines.dsh 对 0.2.2-rc.1 判定 true；② 隔离 profile 真挂载：dsh --profile memtest --dump-config 输出 '# == dsh-memento / - id: memento / name: dsh-memento'，零缺失依赖零解析失败；③ 存储层离线端到端：insertEntry/listEntries/queryEntries/bumpRecall/auditAppend/auditList 全通过，关闭后重开数据仍在（持久化），budgetReport 与 checkBudget 正确，visibleEntries 跨工作区隔离正确；④ 全量扫描：无 .node/.so/.wasm、无子进程、无网络调用"
+}
