@@ -1,0 +1,67 @@
+# daily-sync.yml — 每天北京时间 04:00 同步上游 kelai141/dsh-mobile-apk 的新提交
+#
+# 只做「拉取 + 重打 fork 补丁 + 推送」，不负责构建：
+#   构建由 build-apk.yml 自己的 schedule（UTC 20:30 / 北京 04:30）承担，产物由 nightly-publish.yml 发布。
+#   拆开的原因：构建要读默认分支最新代码，而同一 workflow 里的 job 用的是触发时的旧提交。
+#
+# 合并策略：git merge -X theirs。fork 只改 README 与 build-apk.yml 两处，
+#   冲突时一律取上游版本，再交给 inject-fork-patches.mjs 重新打补丁，保证代码永远是上游最新。
+name: daily-sync
+
+on:
+  schedule:
+    # UTC 20:00 = 北京时间次日 04:00
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 检出 fork 默认分支
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          lfs: false
+
+      - name: 合并上游 main 并刷新 fork 补丁
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/kelai141/dsh-mobile-apk.git 2>/dev/null || true
+          git fetch --no-tags upstream main
+          UP=$(git rev-parse upstream/main)
+          echo "上游 main: $UP"
+
+          if git merge-base --is-ancestor "$UP" HEAD; then
+            echo "上游无新提交，只刷新补丁"
+          else
+            echo "检测到上游新提交，开始合并"
+            if ! git merge --no-edit -X theirs "$UP"; then
+              git merge --abort || true
+              echo "::error::合并上游失败（非文件冲突类错误），请人工处理"
+              exit 1
+            fi
+          fi
+
+          node .github/scripts/inject-fork-patches.mjs
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "工作区无变化，不提交"
+            exit 0
+          fi
+          git commit -m "chore: 同步上游 ${UP:0:8} 并刷新 fork 补丁"
+          git push origin HEAD:main
+          echo "已推送到 main"
