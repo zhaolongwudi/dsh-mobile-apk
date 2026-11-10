@@ -1,0 +1,43 @@
+{
+  "name": "dsh-providers-hub-port",
+  "purpose": "把 Jet Hub（dsh-providers-hub）移植进 dsh-mobile-apk，并保证每日新构建物覆盖安装后仍在位",
+  "package": {
+    "name": "dsh-providers-hub",
+    "version": "2.20.261109",
+    "source": "https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-2.20.261109.tgz"
+  },
+  "bundledDependencies": {
+    "jose": "6.2.17",
+    "undici": "8.12.4",
+    "wreq-js": "3.2.0",
+    "@wreq-js/binding-android-arm64": "3.2.0",
+    "@deepseek-ai/cosmokit": "1.9.0",
+    "@deepseek-ai/schemastery": "3.19.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-commands": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "runtime": "dsh 0.2.2-rc.1（随 APK 快照）",
+  "payload": {
+    "file": "payload.tar.gz",
+    "sha256": "0b17e96374eea00e330fbbba078a9862ec0b85e5ce0abe6f08c85c7a6f4b2bd3",
+    "bytes": 10296557,
+    "layout": "node_modules/"
+  },
+  "mount": {
+    "kind": "bundle",
+    "layer": "dsh.profile.bundles",
+    "entryId": "codearts-auth",
+    "patch": "cordis.patch.yml"
+  },
+  "stateDirs": [
+    "$DSH_HOME/jet-hub",
+    "$DSH_HOME/openai-gateway"
+  ],
+  "verifiedAt": "2026-11-10T14:40+08:00",
+  "verifiedHow": "独立引擎实启（127.0.0.1:4799）后 pluginManager/listPlugins：include:codearts-auth enabled=true fiberPhase=active；网关 127.0.0.1:8326 返回 401 invalid_api_key"
+}
