@@ -1,0 +1,8 @@
+#!/bin/sh
+# dsh-purge port: 切换分支后（$3=1 才是分支切换，不是文件检出）跑一次移植件守卫。
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+S="$HERE/tools/after-upstream.sh"
+[ -f "$S" ] || exit 0
+[ "$3" = "1" ] || exit 0
+if command -v bash >/dev/null 2>&1; then bash "$S"; else sh "$S"; fi
+exit 0

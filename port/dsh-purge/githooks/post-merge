@@ -1,0 +1,8 @@
+#!/bin/sh
+# dsh-purge port: 上游 pull / merge 之后的移植件守卫。
+# 只读检查，恒退出 0，不阻断 git 操作。
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+S="$HERE/tools/after-upstream.sh"
+[ -f "$S" ] || exit 0
+if command -v bash >/dev/null 2>&1; then bash "$S"; else sh "$S"; fi
+exit 0

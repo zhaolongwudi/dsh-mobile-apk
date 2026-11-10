@@ -1,0 +1,52 @@
+{
+  "name": "dsh-purge-port",
+  "purpose": "把 dsh-purge Community（破甲插件）移植进 dsh-mobile-apk（com.dsharnessmobile.shell）的 web profile，并在每日新构建物覆盖安装后仍在位；宿主补丁在每次快照刷新后可一键重打",
+  "package": {
+    "name": "dsh-purge-community",
+    "version": "1.6.86",
+    "source": "https://github.com/kingcharleslzy-ai/dsh-purge/releases/download/v1.6.86/dsh-purge-community-1.6.86.tgz"
+  },
+  "bundledDependencies": {
+    "yaml": "2.9.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "runtime": "dsh 0.2.2-rc.1（随 APK 快照）；宿主 @deepseek-ai 目录 = files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai",
+  "payload": {
+    "file": "payload.tar.gz",
+    "sha256": "2f0c375e95c582cbf2294343f6f77c2edeec8b274b7e402fc6d162245b620e52",
+    "bytes": 2221766,
+    "entries": 555,
+    "layout": "node_modules/（dsh-purge-community + yaml，纯 JS，无原生绑定、无符号链接）"
+  },
+  "mount": {
+    "kind": "bundle",
+    "layer": "dsh.profile.bundles",
+    "entries": [
+      "include:dsh-purge",
+      "include:dsh-purge-redteam",
+      "include:dsh-purge-presets",
+      "include:dsh-purge-redteam-store",
+      "include:dsh-purge-redteam-ui"
+    ],
+    "patch": "dsh-purge-community/cordis.patch.yml（包内自带，随 bundle 自动应用）"
+  },
+  "androidFixes": [
+    {
+      "id": "permission-preset-pin",
+      "file": "profiles/web/cordis.patch.yml",
+      "why": "86 条宿主补丁把沙箱/审批默认改成「完全访问 / never」后，@deepseek-ai/dsh-permission-presets 的默认预设推导推不出任何预设入口，构造函数抛 'composed sandbox and approval defaults match no preset; configure defaultPreset explicitly'，该 entry 不激活（实测：重启后 'warning: 1 entry did not activate'）",
+      "fix": "在 profile patch 末尾追加 - id: permission / config: defaultPreset: danger-full-access，显式固定预设；engine 侧实测 permission enabled=true fiber=active"
+    }
+  ],
+  "stateDirs": [
+    "$DSH_HOME/dsh-purge",
+    "$DSH_HOME/dsh-purge-community",
+    "$DSH_HOME/redteam",
+    "$DSH_HOME/prompt-inject.md"
+  ],
+  "hostPatchFootprint": "$FILES/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/<pkg>/lib/*.js 与若干 cordis.patch.yml（写入前自动备份；revert 可还原）",
+  "verifiedAt": "2026-11-10T17:45+08:00",
+  "verifiedHow": "应用 86 条宿主补丁（applied=64, already=7）后重启引擎：pluginManager/listPlugins 里 include:dsh-purge / -redteam / -presets / -redteam-store / -redteam-ui 全部 enabled=true fiber=active，且 include:permission enabled=true；engine.log 无 'did not activate'；selfcheck 宿主 22/22 层 ok、补丁 applied=71/72"
+}
