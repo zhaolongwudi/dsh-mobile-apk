@@ -1,5 +1,18 @@
 # dsh-mobile-apk — 手机上的 AI Agent（DeepSeek Harness 安卓壳）
 
+<!-- dsh-nightly:begin -->
+## ⬇️ 每日自动构建下载（本 fork）
+
+本仓库跟随上游 [`kelai141/dsh-mobile-apk`](https://github.com/kelai141/dsh-mobile-apk)：每天北京时间 **04:00** 拉取新提交，**04:30** 自动重构建，产物覆盖发布在 [`nightly`](https://github.com/zhaolongwudi/dsh-mobile-apk/releases/tag/nightly)。
+
+| 架构 | 直连 | 加速（gh-proxy.com） | 加速（ghfast.top） |
+|---|---|---|---|
+| arm64（真机） | [直连](https://github.com/zhaolongwudi/dsh-mobile-apk/releases/download/nightly/dsh-mobile-apk-arm64.apk) | [加速](https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-mobile-apk/releases/download/nightly/dsh-mobile-apk-arm64.apk) | [加速](https://ghfast.top/https://github.com/zhaolongwudi/dsh-mobile-apk/releases/download/nightly/dsh-mobile-apk-arm64.apk) |
+| x86_64（模拟器） | [直连](https://github.com/zhaolongwudi/dsh-mobile-apk/releases/download/nightly/dsh-mobile-apk-x86_64.apk) | [加速](https://gh-proxy.com/https://github.com/zhaolongwudi/dsh-mobile-apk/releases/download/nightly/dsh-mobile-apk-x86_64.apk) | [加速](https://ghfast.top/https://github.com/zhaolongwudi/dsh-mobile-apk/releases/download/nightly/dsh-mobile-apk-x86_64.apk) |
+
+> 三个链接指向同一个文件，直连不通时改用加速前缀。某天构建失败时不会覆盖已有产物。
+<!-- dsh-nightly:end -->
+
 <!-- 本文件与 README.en.md 逐节对应，改动请在同一 PR 内双语同步。 -->
 
 [English README](README.en.md)
