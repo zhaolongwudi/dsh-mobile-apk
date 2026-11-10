@@ -171,6 +171,26 @@ bash $K/tools/sim-upstream-merge.sh   # 上游合并三场景实证
     language: zh
 ```
 
+> **本机已按此落盘**（2026-11-11 00:04）：设置页写入后，宿主自动把它合并进
+> `profiles/web/cordis.patch.yml`，内容即上面这段，属用户面 patch 条目，重启后保留。
+> 等效地也可以直接在设置页里点选（`settings/mutate` → `memento` 命名空间），
+> 两条路径落到同一个地方。
+
+### `language: zh` 生效范围（实测逐层核对）
+
+| 层面 | 是否跟随 `language` | 备注 |
+|---|---|---|
+| 悬浮窗/抽屉文案 | ✅ | 按钮 `🧠 Memory` → **`🧠 记忆`**；面板 373 条中文词条 |
+| 快照注入文案 | ✅ | `SNAPSHOT_HEADER` / `GROUP_TITLES` / `PROPOSAL_HEADER` 均有 zh 表 |
+| `/memory` 命令输出 | ✅ | 热生效 |
+| 面板条目渲染 | ✅ | 语言来自 `/api/memento/entries` 的 `language` 字段 |
+| **`memory` 工具描述** | ⚠️ **不跟随** | 注册期固定（`makeMemoryTool(service, language)` 在挂载时定型），改语言后需**重启应用**才换 |
+
+> ⚠️ **坑（实测）**：客户端文案只在**页面加载时探测一次**
+> （`probePanelState()` → `installPanel(state)`，`S = STRINGS[state.language] ?? STRINGS.en`）。
+> 所以改完配置**必须刷新一次页面**，悬浮窗才会从英文变中文。
+> 服务端此时已正确返回 `{"language":"zh"}`（已用 `/api/memento/entries` 核实）。
+
 > 本 kit **不自动写这一条**，是刻意的：它会改 profile 的用户面 patch，
 > 而你那份 patch 里已经有 dsh-purge 的 permission 固定与 `autoApplyOnStart`，
 > 无谓的追加只增加与上游合并的冲突面。要固定行为时再手工加，加了也属「用户独有条目」，
