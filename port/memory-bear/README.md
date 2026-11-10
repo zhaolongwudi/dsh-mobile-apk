@@ -96,7 +96,8 @@ KIT=/data/data/com.dsharnessmobile.shell/files/home/dsh-memory-bear-port   # 本
 bash "$KIT/port.sh" install                 # 离线安装/修复（幂等）；--variant 切变体；--force 强制重铺
 bash "$KIT/port.sh" status                  # 只打印落点与版本
 bash "$KIT/port.sh" verify                  # 离线体检：文件/装配/模块契约/合成树/与另两插件无冲突
-bash "$KIT/port.sh" verify --engine         # 追加：隔离 DSH_HOME 起独立引擎（:4799）实测挂载，不碰线上 4145
+bash "$KIT/port.sh" verify --live           # 追加：只读查询线上引擎（4145）的装配表，不动进程、不重启
+bash "$KIT/port.sh" verify --engine         # 追加：隔离 DSH_HOME 起独立引擎（:4799）实测挂载，完全不碰线上
 bash "$KIT/port.sh" uninstall [--purge]     # 卸载；共享依赖永不删
 ```
 
@@ -135,11 +136,15 @@ bash "$KIT/port.sh" uninstall [--purge]     # 卸载；共享依赖永不删
 | 段 | 结果 |
 |---|---|
 | 模块契约（profile 根解析依赖） | `memorybear-memory｜function｜agents,sessions｜Config=function(29字段)` |
-| 合成树 `prepareProfile('web')` | `n=1 jet=1 purge=1 "skippedBundles":[]`（本插件 1 条 insert，另两插件都在，无跳过 bundle） |
+| 合成树 `prepareProfile('web')` | `n=1 override=1 jet=1 purge=1 "skippedBundles":[]`（本插件 1 条 insert + 1 条同 id config 覆盖，另两插件都在，无跳过 bundle） |
 | 共享依赖 | 新装 0 / **已在位且逐字节一致 3**（schemastery 3.19.0、cosmokit 1.9.0、@standard-schema/spec 1.1.0） |
 | 工具名交集 | 本插件 `[memory_preferences, memory_search]`，另两者 `[]` ← 无交集 |
 | 路由交集 | `/api/memorybear/*` vs `/api/subscription/*` `/dsh-purge/*` ← 无交集 |
-| **隔离引擎实启** | `include:memorybear-memory → @redbearai/dsh-memorybear enabled=true fiber=active`；同引擎内 `codearts-auth=active`、`dsh-purge=active` |
+| 隔离引擎实启 | `include:memorybear-memory → @redbearai/dsh-memorybear enabled=true fiber=active`；同引擎内 `codearts-auth=active`、`dsh-purge=active` |
+| **线上引擎实查** | **线上 4145 也已挂载**（`verify --live`）：<br>`include:memorybear-memory → @redbearai/dsh-memorybear enabled=true fiber=active`<br>`include:codearts-auth → dsh-providers-hub enabled=true fiber=active`<br>`include:dsh-purge → dsh-purge-community enabled=true fiber=active` |
+
+**不需要重启**：loader 已经把新的 bundles 选择与 patch 组合进来了（线上查询即为此证）。
+若哪天行为可疑，`bash port.sh verify --live` 是零副作用的复核手段；重启一次也能重新走同一份合成树。
 
 隔离引擎的启动参数与线上那条**逐字对齐**（`node --expose-internals …/lib/bin.js web --port <P> --no-open`）；
 少了 `--expose-internals` 会在 `node-addon-require-builtin` 的回退路径上挂在
@@ -147,14 +152,12 @@ bash "$KIT/port.sh" uninstall [--purge]     # 卸载；共享依赖永不删
 （`$DSH_HOME/port-backup/mb-engine/home/.dsh`，`node_modules` 软链真目录）和**独立端口**，
 所以线上 4145 与其状态完全不受影响。
 
-**仍未覆盖的一项**：线上引擎（4145）的热挂载 —— 需要你在应用里刷新/重启一次。
-重启后 `files/engine.log` 应出现：
+引擎日志中应能看到本插件自报的一行（`endUser=` 为空属正常 —— 还没配连接参数）：
 
 ```
+[memorybear-memory] not configured (missing baseURL, endUserId); memory recall/write are off until set on the Plugins page or in the profile patch
 [memorybear-memory] loaded; endUser=; profile=false recall=true preferences=auto write=true/turn tool=true
 ```
-
-（`endUser=` 为空属正常 —— 还没配连接参数。）
 
 ---
 

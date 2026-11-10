@@ -144,6 +144,6 @@
     "sessionSkipping": "子代理（subagent）会话不召回也不写入，故不影响 subagent 行为"
   },
   "verifiedAt": "2026-11-10T21:20+08:00",
-  "verifiedHow": "见 README『验收』一节：离线合成树（prepareProfile）+ 模块契约实导 + 隔离 DSH_HOME 起独立引擎做运行态挂载确认。",
-  "pendingNote": "线上引擎（127.0.0.1:4145）的运行态需你在应用里刷新/重启后确认——port.sh verify --engine 会用隔离 DSH_HOME 起一个独立引擎先证一遍，不碰线上进程。"
+  "verifiedHow": "port.sh verify --engine（隔离 DSH_HOME 起独立引擎 :4799）+ verify --live（只读查询线上 4145 的 pluginManager/listPlugins）：两端都得到 include:memorybear-memory enabled=true fiber=active，且同引擎内 include:codearts-auth / include:dsh-purge 同为 active。离线段另有：模块契约实导、prepareProfile 合成树（n=1 / override=1 / skippedBundles 空）、工具名与路由交集为零。",
+  "pendingNote": "无待验项：线上引擎已热挂载（loader 已把新的 bundles 选择与 patch 组合进来），不需要重启。仍未做的只是业务侧配置——baseURL / endUserId / MEMORYBEAR_API_KEY 尚未填写，插件处于「不连服务」的安全默认态。"
 }

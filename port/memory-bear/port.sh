@@ -269,8 +269,11 @@ cmd_install() {
 
 cmd_verify() {
   need_runtime
-  local withEngine=0
-  for a in "$@"; do [ "$a" = "--engine" ] && withEngine=1; done
+  local withEngine=0 withLive=0
+  for a in "$@"; do
+    [ "$a" = "--engine" ] && withEngine=1
+    [ "$a" = "--live" ] && withLive=1
+  done
   local fail=0 warn=0
   local tpkg; tpkg=$(current_pkg)
   [ -n "$tpkg" ] || tpkg=$("$NODE" -e 'const m=require(process.argv[1]);process.stdout.write(m.variants[m.variants.default||"memorybear"].name)' "$MANIFEST")
@@ -413,10 +416,14 @@ cmd_verify() {
   if [ "$withEngine" = 1 ]; then
     say "== 7. 隔离引擎实启（不动线上 4145 进程）=="
     cmd_engine_check || fail=$((fail+1))
+  elif [ "$withLive" = 1 ]; then
+    say "== 7. 线上引擎实查（127.0.0.1:<endpoint>）=="
+    cmd_live_check || fail=$((fail+1))
   else
     say "== 7. 运行态 =="
-    say "  SKIP  未加 --engine。线上引擎（127.0.0.1:4145）挂载需在应用里刷新/重启后确认："
-    say "        重启后 engine.log 应出现 [memorybear-memory] loaded; endUser=… 一行。"
+    say "  SKIP  未加 --engine/--live。两种查法："
+    say "        --live    直接问线上引擎（只读 RPC，不重启）：bash port.sh verify --live"
+    say "        --engine  用隔离 DSH_HOME 起独立引擎（:4799）实测挂载，完全不碰线上"
   fi
 
   say ""
@@ -524,6 +531,47 @@ cmd_engine_check() {
   kill_stale_engine "$port"
   say "  独立引擎已停止；隔离 home 留在 $iso"
   return "$rc"
+}
+
+# 只读查询**线上引擎**的装配表：不动进程、不改状态。端口取 .engine-endpoint.json，
+# 会话 cookie 取 app 的 shared_prefs（引擎用 dsh-auth-* 名字；两种 XML 形态都兜）。
+cmd_live_check() {
+  local entryId="$("$NODE" -e 'const m=require(process.argv[1]);const v=m.variants[process.argv[2]]||m.variants[m.variants.default];process.stdout.write(v.entryId)' "$MANIFEST" "${curvar:-$DEFAULT_VARIANT}")"
+  "$NODE" -e '
+    const fs=require("node:fs"),http=require("node:http");
+    const [FILES, entry]=process.argv.slice(1);
+    let cookie="";
+    try{
+      const s=fs.readFileSync("/data/data/com.dsharnessmobile.shell/shared_prefs/dsh_engine_auth.xml","utf8");
+      if(/name="cookie"/.test(s)) cookie=(s.match(/name="cookie">([^<]+)</)||["",""])[1];
+      else { const k=s.match(/name="([^"]+)"/), v=s.match(/<string[^>]*>([^<]+)</); if(k&&v) cookie=k[1]+"="+v[1]; }
+    }catch(e){}
+    if(!cookie){console.log("  FAIL  读不到引擎会话 cookie（shared_prefs/dsh_engine_auth.xml）");process.exit(1)}
+    let port=4145; try{port=JSON.parse(fs.readFileSync(FILES+"/.engine-endpoint.json","utf8")).port}catch(e){}
+    const payload=JSON.stringify({type:"client-request",rpcId:"mb-live",method:"pluginManager/listPlugins",payload:{args:{}}});
+    const req=http.request({host:"127.0.0.1",port,path:"/api/pluginManager/listPlugins",method:"POST",
+      headers:{"content-type":"application/json",cookie,"content-length":Buffer.byteLength(payload)}},res=>{
+      let d="";res.on("data",c=>d+=c);res.on("end",()=>{
+        let j;try{j=JSON.parse(d)}catch(e){console.log("  FAIL  非 JSON 应答（鉴权？）："+d.slice(0,120));process.exit(1)}
+        const rows=j&&j.result&&j.result.value;
+        if(!Array.isArray(rows)){console.log("  FAIL  引擎拒绝： "+JSON.stringify((j&&j.result&&j.result.error)||j).slice(0,200));process.exit(1)}
+        const bare=(v)=>String(v||"").replace(/^include:/,"");
+        console.log("  线上引擎端口 :"+port+"（只读查询，未重启）");
+        let ok=true;
+        for(const w of [entry,"codearts-auth","dsh-purge"]){
+          const r=rows.find(x=>bare(x.entryId)===w || /redbearai\/dsh-memory/.test(x.moduleName||""));
+          if(!r){console.log("  "+(w===entry?"FAIL":"WARN")+"  "+w+" → 不在装配表里"); if(w===entry)ok=false; continue}
+          const good=r.enabled&&r.fiberPhase==="active";
+          if(!good&&w===entry)ok=false;
+          console.log("  "+(good?"PASS":"WARN")+"  "+r.entryId+" → "+r.moduleName+" enabled="+r.enabled+" fiber="+r.fiberPhase);
+        }
+        process.exit(ok?0:1);
+      });
+    });
+    req.on("error",e=>{console.log("  FAIL  连不上线上引擎："+e.message);process.exit(1)});
+    req.end(payload);
+  ' "$FILES" "$entryId" || return 1
+  return 0
 }
 
 cmd_uninstall() {
