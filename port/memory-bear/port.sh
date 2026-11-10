@@ -433,25 +433,36 @@ cmd_verify() {
 
 # 用隔离的 DSH_HOME 起一个独立引擎，验证插件真能被引擎装配并激活；不触碰线上进程与线上状态。
 # 只杀命令行里明确带 `bin.js web --port <port>` 的进程：绝不误伤线上引擎（它绑的是 4145）。
-# 引擎可能 fork 出同命令行的子进程，所以按命令行扫、反复收两轮，不依赖 $! 记下的单个 pid。
+# 引擎 fork 出的子进程命令行相同、且收 SIGTERM 后可能还在优雅收尾，所以：
+#   ① 按命令行扫（不依赖 $! 那一个 pid）；② 最多 12 轮，每轮 TERM；③ 仍活着就 -9 收尾。
+# 注意：本函数只在脚本文件里被执行时安全 —— 若把匹配串直接写在**内联 bash -c 命令**里，
+# 该进程自己的 cmdline 会含这个串而被自己匹配到（实测会自杀）。用变量拼接可规避。
 kill_stale_engine() {
-  local port=$1 found=0 p c
-  for round in 1 2; do
+  local port=$1 found=0 round pid c p
+  for round in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    local alive=0
     for p in $(ls -d /proc/[0-9]* 2>/dev/null); do
       [ -r "$p/cmdline" ] || continue
-      c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
+      c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null) || continue
       case "$c" in
-        *"bin.js web --port $port"*) kill "${p#/proc/}" 2>/dev/null; found=1 ;;
+        *"bin.js web --port $port"*)
+          pid=${p#/proc/}; alive=1; found=1
+          if [ "$round" -ge 8 ]; then kill -9 "$pid" 2>/dev/null; else kill "$pid" 2>/dev/null; fi ;;
       esac
     done
+    [ "$alive" = 0 ] && break
     sleep 1
   done
-  for p in $(ls -d /proc/[0-9]* 2>/dev/null); do
-    [ -r "$p/cmdline" ] || continue
-    c=$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)
-    case "$c" in *"bin.js web --port $port"*) kill -9 "${p#/proc/}" 2>/dev/null ;; esac
-  done
   [ "$found" = 1 ] && say "  已清掉残留独立引擎（:$port）"
+  # 收尾后确认端口真的空出来了（只报，不阻塞）
+  if ! "$NODE" -e '
+    const net=require("net");const s=net.createServer();
+    s.once("error",()=>process.exit(1));
+    s.once("listening",()=>{s.close();process.exit(0)});
+    s.listen(Number(process.argv[1]),"127.0.0.1");
+  ' "$port" 2>/dev/null; then
+    say "  注意 端口 :$port 仍被占用（可能是别的程序，不是本 kit 的引擎）"
+  fi
   return 0
 }
 
@@ -476,15 +487,19 @@ cmd_engine_check() {
       "$NODE" --expose-internals "$ENGINE/lib/bin.js" web --port "$port" --no-open >"$log" 2>&1 & echo $! > "$base/pid" )
   local pid; pid=$(cat "$base/pid" 2>/dev/null)
   # 首次启动要给 node 编译缓存热身，实测 6～32s 都有；给足 120s，并按秒轮询启动日志里的 ?token=。
-  local i=0 token="" limit=120
+  # 提前中断只认「真致命」：启动失败 / fatal / 本端口被占。
+  # 注意别把 `EADDRINUSE 127.0.0.1:8326` 当致命 —— 那是 Jet Hub 的本地网关在第二个引擎里必然抢不到端口，
+  # 只是 warn（双引擎并存时的正常现象），本插件与它无关。
+  local i=0 token="" limit=120 aborted=""
   while [ $i -lt $limit ]; do
     token=$(grep -aoE "token=[A-Za-z0-9_-]+" "$log" 2>/dev/null | tail -1 | cut -d= -f2)
     [ -n "$token" ] && break
-    grep -qiE "startup failed|EADDRINUSE|fatal" "$log" 2>/dev/null && break
+    if grep -qiE "startup failed|dsh: fatal|Failed plugins" "$log" 2>/dev/null; then aborted="启动失败"; break; fi
+    if grep -qiE "address already in use 127\.0\.0\.1:$port|EADDRINUSE.*:$port" "$log" 2>/dev/null; then aborted="本端口被占"; break; fi
     sleep 1; i=$((i+1))
   done
   if [ -z "$token" ]; then
-    say "  FAIL  独立引擎未在 ${limit}s 内就绪（pid=$pid，日志尾部）："
+    say "  FAIL  独立引擎未就绪（等了 ${i}s${aborted:+，因「$aborted」提前判定}；pid=$pid），日志尾部："
     tail -14 "$log" 2>/dev/null | sed 's/^/        /'
     kill_stale_engine "$port" >/dev/null
     return 1
