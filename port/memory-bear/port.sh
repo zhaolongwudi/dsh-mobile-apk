@@ -266,6 +266,42 @@ cmd_install() {
   printf '{"package":"%s","variant":"%s","version":"%s","kit":"%s","installedAt":"%s"}\n' \
     "$tpkg" "$variant" "$version" "$(kit_version)" "$(date -Iseconds)" > "$STATE"
 
+  # 变体互斥还要落到**配置条目**上：profile patch 里那个 `- id: <另一变体的 entryId>` 覆盖条目
+  # 在它对应的 insert 消失后会变孤儿（config-only、没有 name 可挂）——整块停用，切回来时逐行还原。
+  # 停用用什么标记很关键：不能用裸 `# `（无法与文件里本来就有的注释区分），所以每行加 `#| ` 前缀。
+  "$NODE" -e '
+    const fs=require("node:fs");
+    const [file,active,idle]=process.argv.slice(1);
+    const MARK="#| ", IDMARK="#|";
+    if(!fs.existsSync(file)){console.log("(无 profile patch，跳过条目停用)");process.exit(0)}
+    let lines=fs.readFileSync(file,"utf8").split(/\r?\n/);
+    const idRe=(id)=>new RegExp("^[\\s]*-[\\s]*id:[\\s]*"+id+"[\\s]*$");
+    const isMarker=(l)=>l.startsWith(IDMARK+" ")||l===IDMARK;
+    const unmark=(l)=>l.startsWith(MARK)?l.slice(MARK.length):(l===IDMARK?"":l);
+    // 1) 先还原：找到「(kit) 变体未挂载，条目已停用： <active>」标记，删标记并剥掉紧随其后连续 `#|` 行
+    let restored=0;
+    for(let i=0;i<lines.length;i++){
+      if(!isMarker(lines[i])||!lines[i].includes(active)) continue;
+      lines.splice(i,1);i--;
+      while(i+1<lines.length&&isMarker(lines[i+1])){ lines[i+1]=unmark(lines[i+1]); i++; }
+      restored++;
+    }
+    // 2) 再停用 idle 条目：整块加 `#| ` 前缀，块前放标记
+    let disabled=0;
+    const at=lines.findIndex((l)=>idRe(idle).test(l));
+    if(at>=0){
+      let end=at+1; while(end<lines.length&&!/^-[ ]/.test(lines[end])) end++;
+      const block=lines.slice(at,end);
+      const marked=[IDMARK+" 变体未挂载，条目已停用： "+idle, ...block.map((l)=>l.length?MARK+l:IDMARK)];
+      lines.splice(at,end-at,...marked);
+      disabled=1;
+    }
+    fs.writeFileSync(file,lines.join("\n").replace(/\n+$/,"\n"));
+    console.log("配置条目：还原 "+restored+" 个（"+active+"），停用 "+disabled+" 个（"+idle+"）");
+  ' "$PROFILE/cordis.patch.yml" \
+    "$( "$NODE" -e 'const m=require(process.argv[1]);process.stdout.write(m.variants[process.argv[2]].entryId)' "$MANIFEST" "$variant" )" \
+    "$( "$NODE" -e 'const m=require(process.argv[1]);const v=Object.values(m.variants).filter(x=>x&&x.name&&x.entryId);process.stdout.write(v.find(x=>x.entryId!==process.argv[2]).entryId)' "$MANIFEST" "$( "$NODE" -e 'const m=require(process.argv[1]);process.stdout.write(m.variants[process.argv[2]].entryId)' "$MANIFEST" "$variant" )" )" || true
+
   say ""
   say "下一步："
   say "  1) 在应用里刷新页面（或重启应用）——插件面板出现在 设置 → Plugins；"
@@ -693,31 +729,83 @@ cmd_unsetkey() {
 
 # 连接字段（baseURL / endUserId / portalURL）写进 profile patch 的本插件条目里。
 # 这是**配置层**、不是密钥：与网页版 Plugins 页保存 volatile 字段等价（都落 profile patch）。
+# 采用**逐键合并**：只覆盖你显式给的那几个键，块里其它键（含网页版保存的 recall/writeMode 等）原样保留。
 cmd_setconn() {
   need_runtime
-  local baseURL=${1:-} endUserId=${2:-}
-  [ -n "$baseURL" ] || die "用法：bash port.sh setconn <baseURL> [<endUserId>]    例：setconn https://mem.example.com/v1 8f0c…"
-  local entry=memorybear-memory
+  local baseURL="" endUserId="" portalURL="" showonly=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --portal) shift; portalURL=${1:-} ;;
+      --show) showonly=1 ;;
+      --*) die "未知参数：$1" ;;
+      *) if [ -z "$baseURL" ]; then baseURL=$1; elif [ -z "$endUserId" ]; then endUserId=$1; else die "参数太多：$1"; fi ;;
+    esac
+    shift
+  done
+  local entry="memorybear-memory"
+  [ -n "$portalURL" ] && entry="memoryskills-memory"
+  if [ "$showonly" = 1 ]; then cmd_conf; return $?; fi
+  [ -n "$baseURL$endUserId$portalURL" ] || die "用法：bash port.sh setconn <baseURL> [<endUserId>]   |   bash port.sh setconn --portal <portalURL>   |   bash port.sh setconn --show"
   cp "$PROFILE/cordis.patch.yml" "$PROFILE/cordis.patch.yml.pre-setconn.bak" 2>/dev/null || true
   "$NODE" -e '
     const fs=require("node:fs");
-    const [file,entry,baseURL,endUserId]=process.argv.slice(1);
-    const text=fs.readFileSync(file,"utf8");
-    const lines=text.split(/\r?\n/);
-    const start=lines.findIndex((l)=>new RegExp("^[\\s]*-[\\s]*id:[\\s]*"+entry+"[\\s]*$").test(l));
-    if(start<0){console.error("no-entry");process.exit(1)}
+    const [file,entry,baseURL,endUserId,portalURL]=process.argv.slice(1);
+    const want=[];
+    if(baseURL)      want.push(["baseURL",baseURL]);
+    if(endUserId)    want.push(["endUserId",endUserId]);
+    if(portalURL)    want.push(["portalURL",portalURL]);
+    const lines=fs.readFileSync(file,"utf8").split(/\r?\n/);
+    let start=lines.findIndex((l)=>new RegExp("^[\\s]*-[\\s]*id:[\\s]*"+entry+"[\\s]*$").test(l));
+    if(start<0) throw new Error("profile patch 里没有 `- id: "+entry+"` 条目（先跑 port.sh install/switch）");
     let end=start+1;
     while(end<lines.length && !/^-[ ]/.test(lines[end])) end++;
-    const head=lines.slice(0,start);
-    const tail=lines.slice(end);
-    const block=["- id: "+entry,"  config:","    enabled: true",
-      "    baseURL: "+JSON.stringify(baseURL),
-      ...(endUserId?["    endUserId: "+JSON.stringify(endUserId)]:[])];
-    fs.writeFileSync(file,[...head,...block,...tail].join("\n").replace(/\n+$/,"\n"));
-    console.log("已写入 profile patch："+entry+" 的 baseURL"+(endUserId?" / endUserId":""));
-  ' "$PROFILE/cordis.patch.yml" "$entry" "$baseURL" "$endUserId" || die "改 profile patch 失败（先看 $PROFILE/cordis.patch.yml.pre-setconn.bak）"
+    const block=lines.slice(start,end);
+    // 逐键合并：命中就替换值，没有就补；块内其它行（网页版写的 recall/writeMode 等）一律不动
+    const seen=new Set();
+    const merged=block.map((l)=>{
+      const m=l.match(/^(\s+)([A-Za-z][A-Za-z0-9_]*)\s*:.*$/);
+      if(!m) return l;
+      const hit=want.find(([k])=>k===m[2]);
+      if(!hit) return l;
+      seen.add(hit[0]);
+      return m[1]+hit[0]+": "+JSON.stringify(hit[1]);
+    });
+    const missing=want.filter(([k])=>!seen.has(k));
+    if(missing.length){
+      // 插到 config: 行之后，保持 YAML 缩进
+      const ci=merged.findIndex((l)=>/^\s*config\s*:\s*$/.test(l));
+      const at=ci>=0?ci+1:merged.length;
+      const indent=ci>=0?(merged[ci].match(/^\s*/)[0]+"  "):"    ";
+      merged.splice(at,0,...missing.map(([k,v])=>indent+k+": "+JSON.stringify(v)));
+    }
+    fs.writeFileSync(file,[...lines.slice(0,start),...merged,...lines.slice(end)].join("\n").replace(/\n+$/,"\n"));
+    console.log("已合并进 profile patch["+entry+"]："+want.map(([k])=>k).join(", ")+"（其它键原样保留）");
+  ' "$PROFILE/cordis.patch.yml" "$entry" "$baseURL" "$endUserId" "$portalURL" || die "改 profile patch 失败（备份：$PROFILE/cordis.patch.yml.pre-setconn.bak）"
   say "  备份：$PROFILE/cordis.patch.yml.pre-setconn.bak"
-  say "  刷新页面（或重启应用）后插件连服务；engine.log 应出现「[memorybear-memory] loaded; endUser=…」"
+  say "  刷新页面（或重启应用）后插件连服务；engine.log 应出现「["$entry"] loaded; endUser=…」"
+}
+
+# 打印本插件在配置层的**生效值**（合成树里的那一层；schema 默认值由插件自己补）
+cmd_conf() {
+  need_runtime
+  local entry="${1:-}"
+  [ -n "$entry" ] || entry=$("$NODE" -e 'const m=require(process.argv[1]);const v=m.variants[m.variants.default||"memorybear"];process.stdout.write(v.entryId)' "$MANIFEST")
+  local curvar; curvar=$(variant_of_pkg "$(current_pkg)"); [ -n "$curvar" ] || curvar=$DEFAULT_VARIANT
+  entry=$("$NODE" -e 'const m=require(process.argv[1]);process.stdout.write(m.variants[process.argv[2]].entryId)' "$MANIFEST" "$curvar")
+  say "当前变体：$curvar（条目 id: $entry）"
+  say "配置文件：$PROFILE/cordis.patch.yml"
+  if ! grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*$entry[[:space:]]*$" "$PROFILE/cordis.patch.yml" 2>/dev/null; then
+    say "  该条目在 profile patch 里还不存在（用 schema 默认值 + 空连接字段）"
+    say "  连接字段为空 ⇒ 插件不连服务（召回/写入关闭）"
+    return 0
+  fi
+  awk -v e="$entry" '
+    $0 ~ "^[[:space:]]*-[[:space:]]*id:[[:space:]]*"e"[[:space:]]*$" { hit=1; print "  "$0; next }
+    hit && /^-[ ]/ { exit }
+    hit { print "  "$0 }
+  ' "$PROFILE/cordis.patch.yml"
+  say ""
+  say "改了要生效：网页版 Plugins 页保存是热更新；直接改文件则刷新页面或重启应用。"
 }
 
 cmd_uninstall() {
@@ -751,6 +839,7 @@ case "${1:-}" in
   setkey)    shift; cmd_setkey "$(variant_of_pkg "$(current_pkg)")" "$@" ;;
   unsetkey)  shift; cmd_unsetkey "$(variant_of_pkg "$(current_pkg)")" "$@" ;;
   setconn)   shift; cmd_setconn "$@" ;;
+  conf)      shift; cmd_conf "$@" ;;
   uninstall) shift; cmd_uninstall "$@" ;;
   *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
