@@ -107,27 +107,60 @@ bash "$KIT/port.sh" uninstall [--purge]     # 卸载；共享依赖永不删
 
 ---
 
-## 5. 配置（连接参数）
+## 5. 凭据与连接：先拿 key，再填两处
 
-**默认挂载是零网络副作用的**：`baseURL` 与 `endUserId` 都为空时插件不连任何服务，
-召回与写入关闭，`memory_search` 返回「未配置」，只在 `engine.log` 记一条 warn。
+### 5.1 拿 key —— 看你走哪条产品线
 
-两个填法二选一：
+| | **memoryskills**（个人入口，自助） | **memorybear**（企业 V1，需租户） |
+|---|---|---|
+| 入口 | <https://memoryskills.redbearai.com/#/login> | 你自己的 MemoryBear 服务（`https://<host>/v1`） |
+| 注册 | **邮箱验证码登录即注册**：输入邮箱 → 发送验证码 → 填 6 位验证码 → 登录。首次登录出「记忆熊凭证已生成」页，点**复制全部凭证** | 在 MemoryBear 控制台/管理接口里取 **workspace API key**，并**先建好一个 end_user**（插件不会创建 end_user） |
+| key 形态 | `sk-mem-…`（插件会校验这个前缀） | 控制台签发的 workspace key |
+| 事后找回 | 底部「我的记忆」→ **Memory API Key**（"注册时签发一把，登录时返回同一把 Key"；刷新页面后完整 Key 会从浏览器内存清除，重新登录即可） | 控制台可重新查看/轮换 |
+| 还要填 | Portal 地址（默认 `https://memoryskills.redbearai.com`，一般不用改） | `baseURL` + `endUserId`（end_user UUID） |
+| 额度 | 有写入次数概念（注册赠送 / 可购买，用尽后暂停写入） | 按你自己的部署 |
 
-1. **网页版 Plugins 页**（推荐）：`设置 → Plugins → MemoryBear`，填 `baseURL`、`endUserId`，
-   API key 存进 dsh 凭据库（引用名默认 `MEMORYBEAR_API_KEY`，**不落配置文件**）。
-   这些字段是 `volatile` 的，保存即热更新，不用重挂。
-2. **profile patch**（像上游 README 那样钉在配置层）：
+**当前本机挂的是 `memorybear` 变体**。没有 MemoryBear 租户就直接切到自助那条：
 
-```yaml
-- id: memorybear-memory
-  config:
-    baseURL: https://<memorybear-host>/v1
-    endUserId: <end_user uuid>
-    # apiKeyEnv: MEMORYBEAR_API_KEY
+```bash
+bash ~/dsh-memory-bear-port/port.sh switch memoryskills
 ```
 
-要点：MemoryBear 侧要**先有 end_user**（插件不创建 end_user）；子代理会话不召回也不写入。
+### 5.2 填 key —— 两处，各管一件事
+
+| 填什么 | 填哪儿 | 存到哪 |
+|---|---|---|
+| **key**（敏感） | 网页版 `设置 → Plugins → MemoryBear / MemorySkills` 面板的 **API Key** 字段 | **dsh 凭据库**（`.credentials.yaml` 的 `refs` 段，引用名 `MEMORYBEAR_API_KEY` / `MEMORYSKILLS_API_KEY`）。页面原文："保存在 dsh 凭据库（{ref}），不写进设置文件。留空表示保持当前密钥。" |
+| **连接字段**（`baseURL`+`endUserId` / `portalURL`） | 同一个面板的对应输入框 | profile `cordis.patch.yml` 的 `- id: memorybear-memory` 条目（volatile 字段，保存即热更新） |
+
+**终端等价操作**（走引擎自己的 `credentials/set` RPC —— 和网页版那条路完全一样）：
+
+```bash
+bash ~/dsh-memory-bear-port/port.sh key                    # 只读：两个变体的 key 是否已配置
+printf '%s' 'sk-mem-你的key' | bash ~/dsh-memory-bear-port/port.sh setkey
+bash ~/dsh-memory-bear-port/port.sh setconn https://<host>/v1 <end_user-uuid>   # 仅 memorybear 需要
+bash ~/dsh-memory-bear-port/port.sh unsetkey               # 想换/撤销时
+```
+
+`setkey` 默认从**标准输入**读（不进 shell 历史、不进命令行参数）；用 `--ref NAME` 可指向别的引用名。
+
+### 5.3 填完怎么确认
+
+1. 配置页应显示 **「已配置密钥（来源：…）」**（未配置时是"未配置密钥；配置之前读写记忆都会被拒绝"）。
+2. `engine.log` 里应有插件自报：
+
+```
+[memorybear-memory] loaded; endUser=<uuid>; profile=false recall=true preferences=auto write=true/turn tool=true
+```
+
+3. 想立刻试：问它一句"我上次说我喜欢什么？"，或直接看右侧栏「记忆」标签页是否有数据。
+
+**几个坑**：
+
+- key 若来自**启动环境变量**，面板字段会**锁死**（"密钥由启动环境变量 {ref} 提供，这里不能改"）——要改得从启动环境改。
+- `baseURL`/`endUserId` **都填上**之前插件**不连任何服务**（召回/写入关闭、`memory_search` 返回"未配置"），所以默认挂载是零网络副作用的。
+- 两变体**不可同装**（同名 `memory_search`）：`port.sh switch` 会把另一个从 `dependencies`/`bundles` 里摘掉，文件保留以便随时切回。
+- MemoryBear 侧的 **end_user 必须事先存在**，插件只写不建。
 
 ---
 

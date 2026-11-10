@@ -17,10 +17,17 @@
 #
 # 用法：
 #   bash port.sh install [--variant memorybear|memoryskills] [--force] [--shared-deps]
-#   bash port.sh verify [--engine]     体检：文件/装配/模块契约/合成树/与另两插件无冲突；--engine 另起隔离引擎实测挂载
-#   bash port.sh status                只打印当前落点与版本，不改任何东西
-#   bash port.sh switch <variant>      等价于 install --variant <v>（切换注册项，文件已就位时很快）
-#   bash port.sh uninstall [--purge]   卸载（默认保留共享依赖与配置；--purge 连状态/备份一起删）
+#   bash port.sh verify [--live|--engine]
+#                       体检：文件/装配/模块契约/合成树/与另两插件无冲突
+#                       --live 只读实查线上引擎装配表；--engine 另起隔离引擎实测挂载
+#   bash port.sh status               只打印当前落点与版本，不改任何东西
+#   bash port.sh switch <variant>     切换注册项（等价 install --variant <v> --force）
+#   bash port.sh key                  两个变体的 key 是否已配置（只读，走引擎 RPC）
+#   bash port.sh setkey [--ref REF]   把 key 存进 dsh 凭据库（默认从标准输入读，不进 shell 历史）
+#   bash port.sh unsetkey [--ref REF] 从凭据库移除该 key
+#   bash port.sh setconn <baseURL> [<endUserId>]
+#                                     把连接字段写进 profile patch 的本插件条目（memorybear 变体需要）
+#   bash port.sh uninstall [--purge]  卸载（默认保留共享依赖与凭据；--purge 连状态/隔离 home 一起删）
 set -u
 
 SELF=$(cd -- "$(dirname -- "$0")" && pwd)
@@ -589,6 +596,130 @@ cmd_live_check() {
   return 0
 }
 
+# ── 连接与密钥（走引擎自己的 RPC，和网页版 Plugins 页同一条路）────────────────────
+# 网页版 Plugins 页写 key 用的是 remote.credentials.set → HTTP RPC `credentials/set`；
+# 这里直接调同一个 RPC，所以 key 同样落进 dsh 凭据库（.credentials.yaml 的 refs 段），
+# 不写进 cordis.patch.yml，也不需要重启。
+engine_rpc() { # $1=method  $2=JSON args  —— 只读/写凭据用，端口与 cookie 与线上引擎一致
+  local method=$1 args=$2
+  "$NODE" -e '
+    const fs=require("node:fs"),http=require("node:http");
+    const [FILES,method,argsJson]=process.argv.slice(1);
+    let cookie="";
+    try{
+      const s=fs.readFileSync("/data/data/com.dsharnessmobile.shell/shared_prefs/dsh_engine_auth.xml","utf8");
+      if(/name="cookie"/.test(s)) cookie=(s.match(/name="cookie">([^<]+)</)||["",""])[1];
+      else { const k=s.match(/name="([^"]+)"/), v=s.match(/<string[^>]*>([^<]+)</); if(k&&v) cookie=k[1]+"="+v[1]; }
+    }catch(e){}
+    if(!cookie){console.error("read-no-cookie");process.exit(2)}
+    let port=4145; try{port=JSON.parse(fs.readFileSync(FILES+"/.engine-endpoint.json","utf8")).port}catch(e){}
+    const payload=JSON.stringify({type:"client-request",rpcId:"mb-cli",method,payload:{args:JSON.parse(argsJson)}});
+    const req=http.request({host:"127.0.0.1",port,path:"/api/"+method,method:"POST",
+      headers:{"content-type":"application/json",cookie,"content-length":Buffer.byteLength(payload)}},res=>{
+      let d="";res.on("data",c=>d+=c);res.on("end",()=>process.stdout.write(d));
+    });
+    req.on("error",e=>{console.error("rpc-failed: "+e.message);process.exit(3)});
+    req.write(payload);req.end();
+  ' "$FILES" "$method" "$args" 2>/dev/null
+}
+
+var_keyref() { # $1=变体名 → 该变体默认的凭据引用名（apiKeyEnv）
+  case "$1" in
+    memoryskills) echo MEMORYSKILLS_API_KEY ;;
+    memorybear|*) echo MEMORYBEAR_API_KEY ;;
+  esac
+}
+
+cmd_key() { # 只读：报告两个变体的 key 是否已配置
+  need_runtime
+  local curvar="$1"
+  say "凭据引用状态（来源：线上引擎 credentials/describe，只读）"
+  local out; out=$(engine_rpc "credentials/describe" '{"refs":["MEMORYBEAR_API_KEY","MEMORYSKILLS_API_KEY"]}')
+  if [ -z "$out" ]; then say "  FAIL  读不到（引擎未运行或 cookie 不可读）"; return 1; fi
+  printf '%s' "$out" | "$NODE" -e '
+    let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{
+      const j=JSON.parse(d); const v=j&&j.result&&j.result.value;
+      if(!v){console.log("  FAIL  引擎应答异常："+d.slice(0,200));process.exit(1)}
+      const cur=process.argv[1];
+      const map={MEMORYBEAR_API_KEY:"memorybear",MEMORYSKILLS_API_KEY:"memoryskills"};
+      for(const [ref,st] of Object.entries(v)){
+        const me=map[ref]===cur?"  ← 当前变体":"";
+        console.log("  "+(st.configured?"已配置":"未配置").padEnd(4)+"  "+ref+(st.writable?"":"（只读：来自启动环境变量）")+me);
+      }
+    })' "$curvar"
+  say ""
+  say "填写方式二选一："
+  say "  ① 网页版：设置 → Plugins → $curvar 面板 → API Key 填进去（保存即生效，key 进凭据库）"
+  say "  ② 终端：  bash \"$SELF/port.sh\" setkey        （从标准输入读，不进 shell 历史）"
+}
+
+cmd_setkey() { # 写入：把 key 存进凭据库（默认取当前变体的引用名）
+  need_runtime
+  local ref="" curvar="$1"; shift 2>/dev/null || true
+  while [ $# -gt 0 ]; do case "$1" in --ref) shift; ref=${1:-} ;; *) die "未知参数：$1" ;; esac; shift; done
+  [ -n "$ref" ] || ref=$(var_keyref "$curvar")
+  local key=""
+  if [ -t 0 ]; then
+    printf '粘贴 %s 的 key（不回显，回车确认）: ' "$ref" >&2
+    stty -echo 2>/dev/null || true; IFS= read -r key; stty echo 2>/dev/null || true; printf '\n' >&2
+  else
+    IFS= read -r key
+  fi
+  key=$(printf '%s' "$key" | tr -d ' \t\r\n')
+  [ -n "$key" ] || die "没读到内容（用法：printf '%s' \"sk-mem-…\" | bash port.sh setkey）"
+  if [ "$ref" = MEMORYSKILLS_API_KEY ]; then
+    case "$key" in sk-mem-*) ;; *) say "  注意：MemorySkills 的个人 key 以 sk-mem- 开头，你给的不像（仍照写，插件侧会拒绝）" ;; esac
+  fi
+  local out; out=$(engine_rpc "credentials/set" "$("$NODE" -e 'console.log(JSON.stringify({ref:process.argv[1],value:process.argv[2]}))' "$ref" "$key")")
+  case "$out" in
+    *'"ok":true'*) say "  PASS  已写入 $ref（存进 dsh 凭据库，唯一长度=$(printf '%s' "$key" | wc -c) 字节）" ;;
+    *) say "  FAIL  写入失败：$(printf '%s' "$out" | head -c 300)"; return 1 ;;
+  esac
+  key=""
+  say "  插件侧不用重启：配置页打开即显示「已配置密钥」；连接字段也填好后 engine.log 会记 loaded。"
+}
+
+cmd_unsetkey() {
+  need_runtime
+  local ref="" curvar="$1"; shift 2>/dev/null || true
+  while [ $# -gt 0 ]; do case "$1" in --ref) shift; ref=${1:-} ;; *) die "未知参数：$1" ;; esac; shift; done
+  [ -n "$ref" ] || ref=$(var_keyref "$curvar")
+  local out; out=$(engine_rpc "credentials/unset" "$("$NODE" -e 'console.log(JSON.stringify({ref:process.argv[1]}))' "$ref")")
+  case "$out" in
+    *'"ok":true'*) say "  PASS  已从凭据库移除 $ref" ;;
+    *) say "  FAIL  移除失败：$(printf '%s' "$out" | head -c 300)"; return 1 ;;
+  esac
+}
+
+# 连接字段（baseURL / endUserId / portalURL）写进 profile patch 的本插件条目里。
+# 这是**配置层**、不是密钥：与网页版 Plugins 页保存 volatile 字段等价（都落 profile patch）。
+cmd_setconn() {
+  need_runtime
+  local baseURL=${1:-} endUserId=${2:-}
+  [ -n "$baseURL" ] || die "用法：bash port.sh setconn <baseURL> [<endUserId>]    例：setconn https://mem.example.com/v1 8f0c…"
+  local entry=memorybear-memory
+  cp "$PROFILE/cordis.patch.yml" "$PROFILE/cordis.patch.yml.pre-setconn.bak" 2>/dev/null || true
+  "$NODE" -e '
+    const fs=require("node:fs");
+    const [file,entry,baseURL,endUserId]=process.argv.slice(1);
+    const text=fs.readFileSync(file,"utf8");
+    const lines=text.split(/\r?\n/);
+    const start=lines.findIndex((l)=>new RegExp("^[\\s]*-[\\s]*id:[\\s]*"+entry+"[\\s]*$").test(l));
+    if(start<0){console.error("no-entry");process.exit(1)}
+    let end=start+1;
+    while(end<lines.length && !/^-[ ]/.test(lines[end])) end++;
+    const head=lines.slice(0,start);
+    const tail=lines.slice(end);
+    const block=["- id: "+entry,"  config:","    enabled: true",
+      "    baseURL: "+JSON.stringify(baseURL),
+      ...(endUserId?["    endUserId: "+JSON.stringify(endUserId)]:[])];
+    fs.writeFileSync(file,[...head,...block,...tail].join("\n").replace(/\n+$/,"\n"));
+    console.log("已写入 profile patch："+entry+" 的 baseURL"+(endUserId?" / endUserId":""));
+  ' "$PROFILE/cordis.patch.yml" "$entry" "$baseURL" "$endUserId" || die "改 profile patch 失败（先看 $PROFILE/cordis.patch.yml.pre-setconn.bak）"
+  say "  备份：$PROFILE/cordis.patch.yml.pre-setconn.bak"
+  say "  刷新页面（或重启应用）后插件连服务；engine.log 应出现「[memorybear-memory] loaded; endUser=…」"
+}
+
 cmd_uninstall() {
   local purge=0
   for a in "$@"; do [ "$a" = "--purge" ] && purge=1; done
@@ -616,6 +747,10 @@ case "${1:-}" in
   verify)    shift; cmd_verify "$@" ;;
   status)    shift; cmd_status "$@" ;;
   switch)    shift; cmd_install --variant "${1:-}" --force ;;
+  key)       shift; cmd_key "$(variant_of_pkg "$(current_pkg)")" ;;
+  setkey)    shift; cmd_setkey "$(variant_of_pkg "$(current_pkg)")" "$@" ;;
+  unsetkey)  shift; cmd_unsetkey "$(variant_of_pkg "$(current_pkg)")" "$@" ;;
+  setconn)   shift; cmd_setconn "$@" ;;
   uninstall) shift; cmd_uninstall "$@" ;;
   *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
