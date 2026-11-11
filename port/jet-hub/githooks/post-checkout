@@ -1,0 +1,13 @@
+#!/bin/sh
+# jet-hub-protect-v1 —— 由 port/jet-hub/tools/protect.sh install-hooks 装
+# 只在**分支切换**时跑（$3=1），单文件 checkout 不跑，避免打断日常操作。
+# 只读体检，恒退出 0，不阻断任何 git 操作。
+[ "$3" = "1" ] || exit 0
+R=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$R" ] || exit 0
+S="$R/port/jet-hub/tools/protect.sh"
+
+if [ -f "$S" ]; then
+  if command -v bash >/dev/null 2>&1; then bash "$S" verify; else sh "$S" verify; fi
+fi
+exit 0

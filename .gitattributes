@@ -30,3 +30,18 @@ base/*.tar.xz filter=lfs diff=lfs merge=lfs -text
 
 # 第三方通告随 APK 分发，禁用行尾转换（防 autocrlf 幻影 diff 复发）
 app/src/main/assets/licenses/THIRD_PARTY_NOTICES.md -text
+
+# ---- 移植件（port/）合并策略：ours 优先 ----
+# 为什么加这一条：daily-sync.yml 用的是 `git merge -X theirs upstream/main`，
+# 上游若哪天也建了 port/ 路径，-X theirs 会判上游赢、把移植件改掉或删掉。
+# `merge=ours` 让「双方都改同一文件」这一格强制取我们这侧。
+#
+# 边界（tools/protect.sh sim 可复现实证）：本条**只**覆盖「双方都改」这一格。
+#   · 只有上游改（我们没动）      -> 上游内容照样进来
+#   · 上游删除文件 / 整个目录      -> 删除照样传播
+#   · 上游在 port/ 下新建文件      -> 直接进来
+# 那三格由 port/jet-hub/tools/protect.sh（指纹核验 + 自愈）与
+# .github/workflows/port-guard.yml（CI 兜底）负责，三层合起来才完整。
+# merge=ours 需要 `git config merge.ours.driver true`；空 driver 即「保留 ours」，
+# GitHub 侧的 merge 不读本地 config，故 CI 侧靠 port-guard 兜底而非靠本属性。
+port/** merge=ours

@@ -1,0 +1,32 @@
+#!/bin/sh
+# jet-hub-protect-v1 —— 由 port/jet-hub/tools/protect.sh install-hooks 装
+# 只读体检，恒退出 0，不阻断任何 git 操作。
+#
+# 为什么不直接调 port/jet-hub/tools/protect.sh：
+#   上游删除整个 port/ 目录时（实测会传播），那个脚本自己也不存在了 ——
+#   「守卫被守卫对象一起删掉」是最容易漏的一条。所以本 hook 自带最小恢复逻辑：
+#   ① 目录在 -> 转交 protect.sh verify（指纹级比对）
+#   ② 目录没了 -> 直接从 git 历史把 port/jet-hub 捞回来
+R=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -n "$R" ] || exit 0
+S="$R/port/jet-hub/tools/protect.sh"
+
+if [ -f "$S" ]; then
+  if command -v bash >/dev/null 2>&1; then bash "$S" verify; else sh "$S" verify; fi
+  exit 0
+fi
+
+# —— 目录已消失：从历史里找最近含 port/jet-hub 的提交并恢复 ——
+REV=$(git -C "$R" log --format=%H -1 -- port/jet-hub 2>/dev/null)
+if [ -z "$REV" ]; then
+  echo "[jet-hub 守卫] port/jet-hub 不见了，且 git 历史里找不到它"
+  exit 0
+fi
+SHORT=$(printf '%s' "$REV" | cut -c1-7)
+echo "[jet-hub 守卫] port/jet-hub 不见了（上游删除传播或误删），从 $SHORT 恢复"
+if git -C "$R" checkout "$REV" -- port/jet-hub 2>/dev/null; then
+  echo "[jet-hub 守卫] 已恢复 port/jet-hub，请核对内容后提交"
+else
+  echo "[jet-hub 守卫] 恢复失败，需人工处理"
+fi
+exit 0
