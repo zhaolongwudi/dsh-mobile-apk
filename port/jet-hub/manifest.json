@@ -3,8 +3,10 @@
   "purpose": "把 Jet Hub（dsh-providers-hub）移植进 dsh-mobile-apk，并保证每日新构建物覆盖安装后仍在位",
   "package": {
     "name": "dsh-providers-hub",
-    "version": "2.20.261109",
-    "source": "https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-2.20.261109.tgz"
+    "version": "2.21.261110",
+    "integrity": "sha512-CVygWlEME5349tKuQh3EiE6NUJLWuwcUtHz8sqXTHpzre4w8jUvyBwzVv2dPwt1injGZuP4KuU63LrOWdbbeUg==",
+    "source": "https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-2.21.261110.tgz",
+    "engines": "^22.19.0 || >=24.0.0"
   },
   "bundledDependencies": {
     "jose": "6.2.17",
@@ -24,8 +26,9 @@
   "runtime": "dsh 0.2.2-rc.1（随 APK 快照）",
   "payload": {
     "file": "payload.tar.gz",
-    "sha256": "0b17e96374eea00e330fbbba078a9862ec0b85e5ce0abe6f08c85c7a6f4b2bd3",
-    "bytes": 10296557,
+    "sha256": "295fed9bff90015e59bc2af97e01960182dc82e6078e5eef36390f91efb8c687",
+    "bytes": 10348199,
+    "files": 1518,
     "layout": "node_modules/"
   },
   "mount": {
@@ -38,6 +41,16 @@
     "$DSH_HOME/jet-hub",
     "$DSH_HOME/openai-gateway"
   ],
-  "verifiedAt": "2026-11-10T14:40+08:00",
-  "verifiedHow": "独立引擎实启（127.0.0.1:4799）后 pluginManager/listPlugins：include:codearts-auth enabled=true fiberPhase=active；网关 127.0.0.1:8326 返回 401 invalid_api_key"
+  "lockLedgers": [
+    "profiles/web/pnpm-lock.yaml",
+    "profiles/web/node_modules/.modules.yaml",
+    "profiles/web/node_modules/.pnpm/lock.yaml"
+  ],
+  "knownLedgerGap": {
+    "note": "手工铺包的共性缺陷：下列包声明在 profile package.json 里但不在 pnpm-lock.yaml 的 importers 段，pnpm install/prune 会把它们当多余目录删掉且不报错",
+    "packages": ["dsh-purge-community@1.6.86", "dsh-memento@0.5.30"],
+    "fix": "各包自己的 port 脚本按自身 manifest 调 lockfix.mjs（用法同本 kit）；未补前 verify 第 8 段会持续 WARN"
+  },
+  "verifiedAt": "2026-11-11T10:00+08:00",
+  "verifiedHow": "独立引擎实启后 pluginManager/listPlugins：include:codearts-auth enabled=true fiberPhase=active；引擎自身 boot manifest 的 rev 与磁盘产物 artifactRevision 一致（d9f616379ffc），实服 bundle 999503 字节且含 2.21 的 marvis；网关 127.0.0.1:8326 返回 401 invalid_api_key；import('dsh-providers-hub') 与原生绑定 wreq-js dlopen 均成功；反向演练：人为改回 2.20 账本→verify 第 7 段 FAIL→lockfix 修复；写入壳侧逐字 quarantine 块→status 报 1 条→install --enable 清除并删除空 patch"
 }
