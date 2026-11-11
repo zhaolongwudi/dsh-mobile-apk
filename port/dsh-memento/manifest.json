@@ -24,8 +24,8 @@
   "platforms": "纯宿主，无原生代码、无网络调用。实测 aarch64/arm64-v8a + Bionic 可跑。",
   "payload": {
     "file": "payload.tar.gz",
-    "sha256": "0c8d7ee3b5a9a3cb96981c782abe1df86f8bbec7b1d68812e7165a15be0ae008",
-    "bytes": 226887,
+    "sha256": "a69b0109779ff979ef7da3ed653d792bd2c8db9fc577827f4188aa37949f4ac9",
+    "bytes": 227835,
     "entries": 46,
     "layout": "node_modules/（仅 dsh-memento，纯 JS，无原生绑定、无符号链接）"
   },
@@ -63,6 +63,15 @@
     "$DSH_HOME/cordis.patch.yml（除 install --enable 清理本插件隔离块外不写）",
     "port/dsh-purge 与 port/jet-hub 的任何文件"
   ],
-  "verifiedAt": "2026-11-10T23:20+08:00",
-  "verifiedHow": "① semver：dsh-memento 的 engines.dsh 对 0.2.2-rc.1 判定 true；② 隔离 profile 真挂载：dsh --profile memtest --dump-config 输出 '# == dsh-memento / - id: memento / name: dsh-memento'，零缺失依赖零解析失败；③ 存储层离线端到端：insertEntry/listEntries/queryEntries/bumpRecall/auditAppend/auditList 全通过，关闭后重开数据仍在（持久化），budgetReport 与 checkBudget 正确，visibleEntries 跨工作区隔离正确；④ 全量扫描：无 .node/.so/.wasm、无子进程、无网络调用"
+  "verifiedAt": "2026-11-11T08:55+08:00",
+  "verifiedHow": "① semver：dsh-memento 的 engines.dsh 对 0.2.2-rc.1 判定 true；② 隔离 profile 真挂载：dsh --profile memtest --dump-config 输出 '# == dsh-memento / - id: memento / name: dsh-memento'，零缺失依赖零解析失败；③ 存储层离线端到端：insertEntry/listEntries/queryEntries/bumpRecall/auditAppend/auditList 全通过，关闭后重开数据仍在（持久化），budgetReport 与 checkBudget 正确，visibleEntries 跨工作区隔离正确；④ 全量扫描：无 .node/.so/.wasm、无子进程、无网络调用",
+  "localPatches": [
+    {
+      "id": "client-configforms-softwait",
+      "file": "client/client.js",
+      "why": "上游在 apply() 时一次性 resolveSettingsScope(ctx)；本机实测 configForms 服务在那一刻尚未就绪，导致设置页永久只读（Read-only (settings service unavailable)），且 save() 被 status!==ready 挡掉。",
+      "fix": "用 cordis 软等待 ctx.inject([configForms], cb) 在服务到位后调 controller.rebind(scope) 重建 CardForm 与快照投影源；不动 inject 声明（面板必须无条件挂载），服务永不到场时保留上游只读降级。",
+      "upstreamReport": "建议上游把 resolveSettingsScope 改为软等待（或把设置卡片整体挂到 ctx.inject([configForms]) 下）。"
+    }
+  ]
 }

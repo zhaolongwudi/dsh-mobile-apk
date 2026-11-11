@@ -1,0 +1,80 @@
+--- patches/client.js.orig	2026-11-11 08:55:07.329557889 +0800
++++ /data/data/com.dsharnessmobile.shell/files/home/.dsh/profiles/web/node_modules/dsh-memento/client/client.js	2026-11-11 08:52:05.509557958 +0800
+@@ -1176,6 +1176,42 @@
+           return { ...this.form.shell(), fields, base: this.scope.getSnapshot().base }
+         }
+ 
++        /**
++         * [port fix] 设置服务迟到时就地重建快照源。
++         *
++         * 上游只在 apply() 解析一次设置句柄；服务未就绪时会拿到 UNAVAILABLE_SCOPE
++         * 并永久只读。本方法由 apply() 里的软等待回调调用，用真实句柄重建 CardForm，
++         * 并让已挂载的订阅者拿到新快照（store 是同一实例，只换 projection 源）。
++         * @param {any} scope - 就绪后的宿主设置句柄。
++         * @returns {void}
++         */
++        rebind(scope) {
++          if (!scope || scope === this.scope) return
++          this.scope = scope
++          // 只重建表单（CardForm 的构造函数会订阅新 scope）。
++          this.form = new CardForm(scope, (tops) => {
++            const panel = tops instanceof Map ? tops.get('panel') : undefined
++            if (panel !== null && typeof panel === 'object' && 'enabled' in panel) {
++              setPanelButtonVisible(panel.enabled === true)
++            }
++          })
++          // 投影闭包必须读 `this.form`（而非捕获旧实例），否则 publish() 仍会拿旧表单。
++          // 用箭头函数绑定 this，替换掉 constructor 里存的那条旧闭包，避免双写与泄漏。
++          this.listeners.clear()
++          this.listeners.add(() => this.store.set(this.projection()))
++          this.store.set(this.projection())
++        }
++
++        /**
++         * [port fix] 释放 rebind 期间建立的订阅（幂等）。由软等待回调内的 effect 清理器调用。
++         * @returns {void}
++         */
++        release() {
++          if (this.released) return
++          this.released = true
++          this.listeners.clear()
++        }
++
+         inject() {
+           return {
+             hooks: { mementoCard: this.store },
+@@ -1212,6 +1248,34 @@
+           label: 'dsh-memento',
+           inject: () => controller.inject(),
+         }, MementoSection)), 'dsh-memento: settings section')
++
++        // [port fix] 上游在 apply() 时**一次性** resolveSettingsScope(ctx)。本机实测：
++        // 客户端装配里 dsh-memento 排在 ui-settings 之后（index 76 vs 22），但
++        // configForms 服务在那时仍未就绪 ⇒ 拿到 UNAVAILABLE_SCOPE，设置页永久显示
++        // "Read-only (settings service unavailable)"，且保存被 save() 里的
++        // `status !== 'ready'` 直接挡掉。
++        //
++        // 修法：用 cordis 的软等待（ctx.inject(['configForms'], cb)），等 service 到场后
++        // **重建**控制器并替换快照源。刻意不动注入声明（面板必须无条件挂载），
++        // 服务永不到场时保持上游原有的只读降级。
++        try {
++          ctx.inject(['configForms'], (inner) => {
++            let scope
++            try {
++              scope = resolveSettingsScope(inner)
++            } catch {
++              return
++            }
++            if (!scope || scope === UNAVAILABLE_SCOPE) return
++            controller.rebind(scope)
++            // 绑定到 inner 的 lifecyle：fiber 卸载时随宿主一起释放。
++            if (typeof inner.effect === 'function') {
++              inner.effect(() => () => { controller.release() })
++            }
++          })
++        } catch {
++          /* 软等待不可用：保持上游只读行为 */
++        }
+       }
+ 
+       return {
