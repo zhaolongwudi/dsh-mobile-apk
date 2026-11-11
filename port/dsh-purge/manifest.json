@@ -3,8 +3,8 @@
   "purpose": "把 dsh-purge Community（破甲插件）移植进 dsh-mobile-apk（com.dsharnessmobile.shell）的 web profile，并在每日新构建物覆盖安装后仍在位；宿主补丁在每次快照刷新后可一键重打",
   "package": {
     "name": "dsh-purge-community",
-    "version": "1.6.86",
-    "source": "https://github.com/kingcharleslzy-ai/dsh-purge/releases/download/v1.6.86/dsh-purge-community-1.6.86.tgz"
+    "version": "1.6.88",
+    "source": "https://github.com/kingcharleslzy-ai/dsh-purge/releases/download/v1.6.88/dsh-purge-community-1.6.88.tgz"
   },
   "bundledDependencies": {
     "yaml": "2.9.1"
@@ -15,9 +15,9 @@
   "runtime": "dsh 0.2.2-rc.1（随 APK 快照）；宿主 @deepseek-ai 目录 = files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai",
   "payload": {
     "file": "payload.tar.gz",
-    "sha256": "2f0c375e95c582cbf2294343f6f77c2edeec8b274b7e402fc6d162245b620e52",
-    "bytes": 2221766,
-    "entries": 555,
+    "sha256": "5421337b090bc038c5c1d6591cacfc94df30f2b44dc1bfff0ee075cb0bfb0303",
+    "bytes": 2223470,
+    "entries": 557,
     "layout": "node_modules/（dsh-purge-community + yaml，纯 JS，无原生绑定、无符号链接）"
   },
   "mount": {
@@ -38,6 +38,25 @@
       "file": "profiles/web/cordis.patch.yml",
       "why": "86 条宿主补丁把沙箱/审批默认改成「完全访问 / never」后，@deepseek-ai/dsh-permission-presets 的默认预设推导推不出任何预设入口，构造函数抛 'composed sandbox and approval defaults match no preset; configure defaultPreset explicitly'，该 entry 不激活（实测：重启后 'warning: 1 entry did not activate'）",
       "fix": "在 profile patch 末尾追加 - id: permission / config: defaultPreset: danger-full-access，显式固定预设；engine 侧实测 permission enabled=true fiber=active"
+    },
+    {
+      "id": "android-node-exec-patch",
+      "file": "profiles/web/node_modules/dsh-purge-community/{lib/web.js,lib/rollback-transaction.js,lib/redteam/ui.js,bin/community.js}",
+      "why": "本机 process.execPath = /apex/com.android.runtime/bin/linker64（termux-exec 的 LD_PRELOAD 把 exec 重路由到 linker 路径），插件内部凡 spawn/execFile(process.execPath, …) 都必崩。实测：execFileSync(process.execPath,['-e','1']) → error: expected absolute path: \"-e\"；community.js 的 LEGACY 转发 → error: \"…/dsh-purge.js\" has bad ELF magic: 23212f75。受影响功能 = 面板「重启引擎」助手、维护回滚事务里的干净进程校验、红队演练台重启脚本、community.js 的 apply/revert/uninstall/edit 转发",
+      "fix": "tools/patch-android-exec.mjs 在载荷落盘时把这 4 个文件共 6 处 process.execPath 改写为 (process.env.PURGE_NODE_EXEC||(existsSync(烧入的绝对 node 路径)?该路径:process.execPath))；幂等、带锚点期望次数（3/1/1/1）与语法自证（node --check）；port.sh install/sync 与 guard.sh 都把关",
+      "evidence": "正控：打补丁后 bin/community.js legacy-status → 正常输出、rc=0；负控：同一文件撤掉补丁 → bad ELF magic、rc=1"
+    },
+    {
+      "id": "no-registry-dep-key",
+      "file": "profiles/web/package.json",
+      "why": "dsh-purge-community 不在 npm registry 上（registry.npmjs.org / npmmirror 均 404）。早期 kit 按 registry 形状写入 dependencies，导致任何 pnpm 动作整次失败（实证 profile/.plugin-manager/logs/operation-*/pnpm.log: ERR_PNPM_FETCH_404），2026-11-11 的一次事务还把该键与 lockfile 一起重写掉，装配判据随之失守",
+      "fix": "只登记 dsh.profile.bundles，不写 registry 形状依赖键；install 自动去毒（发现该形状即删除），verify 第 2 段把它判 FAIL 防回流。依据：引擎装配走目录探测（dsh-app-boot loadProfileDirectory → resolveBundleDir → packageDirFromAnchor，dsh-app-boot/lib/index.js:1817-1823、1836-1842），bundle 解析不需要 dependencies 键；dependencies 只影响插件管理器记账（dsh-plugin-manager/lib/index.js:2147）"
+    },
+    {
+      "id": "clean-laydown",
+      "file": "profiles/web/node_modules/dsh-purge-community",
+      "why": "早期用源码树铺过一次：发布物 322 个文件、落出来 499 个（多出 test/ 106、packages/ 54、market/ 6、.github/ 6 等共 177 个 dev 件）；而 cp -R 是叠加式，上游删掉的文件不会随升级消失",
+      "fix": "install 改成干净落位：旧目录先 mv 到 .purge-old-$$，发布物整份铺入后再删旧目录（落位失败自动移回）；重铺判据 = 与发布物逐文件相等（comm 比对），不等就重铺"
     }
   ],
   "stateDirs": [
@@ -47,6 +66,6 @@
     "$DSH_HOME/prompt-inject.md"
   ],
   "hostPatchFootprint": "$FILES/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/<pkg>/lib/*.js 与若干 cordis.patch.yml（写入前自动备份；revert 可还原）",
-  "verifiedAt": "2026-11-10T17:45+08:00",
-  "verifiedHow": "应用 86 条宿主补丁（applied=64, already=7）后重启引擎：pluginManager/listPlugins 里 include:dsh-purge / -redteam / -presets / -redteam-store / -redteam-ui 全部 enabled=true fiber=active，且 include:permission enabled=true；engine.log 无 'did not activate'；selfcheck 宿主 22/22 层 ok、补丁 applied=71/72"
+  "verifiedAt": "2026-11-11T16:20+08:00",
+  "verifiedHow": "2026-11-11 上游同步到 1.6.88（release tgz sha256 4a557104… 校验通过；lib/patches/ 与 1.6.86 逐字节相同 → 补丁表未变、锚点面未搬）→ 载荷重打包 entries=557/sha256 5421337b… → 干净落位（安装集与发布物逐文件一致 324/324，清掉 177 个 dev 件）→ port.sh verify 六段全绿（文件/装配/模块可加载/Android 执行器补丁/permission 固定/引擎 fiber）→ selfcheck state=ok ok=true applied=71/72 na=9 skipped=3 off=0 missing_file=0 level=qualified，宿主 24/25 层 ok（layout 层 Web 宿主预期 na）→ reanchor drifted=2，均为 optional（#54/#76）→ 执行器补丁正控 rc=0 / 负控 rc=1"
 }

@@ -37,6 +37,35 @@ die() { printf 'port: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 jq_node() { "$NODE" -e "$1" "${@:2}"; }
 
+# ---------------------------------------------------------------------------
+# 依赖键政策（2026-11-11 修，设备实证）
+#
+# dsh-purge-community **不在 npm registry 上**（registry.npmjs.org 与 npmmirror
+# 都是 404）。若把它按 registry 形状写进 profile/package.json 的 dependencies
+# （裸版本号或范围），任何 pnpm 动作都会去 registry 拉它 →
+#   ERR_PNPM_FETCH_404 GET https://registry.npmjs.org/dsh-purge-community
+# → **整次安装事务失败**（实证：profile/.plugin-manager/logs/operation-*/pnpm.log
+#   2026-11-10 19:53 两次；2026-11-11 一次事务把它与 lockfile 一起重写掉了）。
+#
+# 引擎侧装配 bundle **不需要** dependencies 键：dsh-app-boot 的 loadProfileDirectory
+# 逐个 bundle 调 resolveBundleDir → packageDirFromAnchor 做的是**目录探测**
+# （createRequire(anchor).resolve.paths + 目录里有没有 package.json），与
+# dependencies / lockfile 无关（dsh-app-boot/lib/index.js:1817-1823、1836-1842）。
+# dependencies 只影响插件管理器「已安装 / 可移除 / 可更新」的记账（dsh-plugin-manager
+# lib/index.js:2147）。
+#
+# 所以本 kit 的口径：**只登记 dsh.profile.bundles，不写 registry 形状的依赖键**；
+# 发现地雷键就自动去掉（de-poison），verify 里把它判 FAIL 防止再长回来。
+# 手工铺的包天然活在 lockfile 之外，这是本仓既有口径（见 port/jet-hub/tools/lockfix.mjs
+# 头注释：完全缺席的包不擅自补 lockfile，只知情）。
+# ---------------------------------------------------------------------------
+spec_is_registry() { # $1=spec；rc=0 表示「registry 形状」（会触发 registry 解析）
+  case "$1" in
+    ""|file:*|link:*|git*|http:*|https:*|/*|.*|workspace:*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 need_runtime() {
   [ -x "$NODE" ] || die "找不到运行时 node：$NODE（可用 NODE=... 覆盖）"
   [ -d "$PROFILE" ] || die "找不到 web profile：$PROFILE（应用是否已首次启动？）"
@@ -138,13 +167,17 @@ cmd_status() {
   say "host base    : $host"
   [ -f "$STATE" ] && say "stamp        : $(cat "$STATE")" || say "stamp        : (无)"
   jq_node '
-    const fs=require("node:fs");const [f,n]=process.argv.slice(1);
+    const fs=require("node:fs");const [f,n,lock]=process.argv.slice(1);
     const j=JSON.parse(fs.readFileSync(f,"utf8"));
-    const dep=(j.dependencies||{})[n]||"(缺少)";
+    const dep=(j.dependencies||{})[n];
+    const local=/^(file:|link:|git\+?|https?:|\/|\.)/.test(String(dep||""));
+    console.log("dep key      : "+(dep===undefined?"(无：设计如此，registry 上没有这个包)":(local?"本地/远端 spec "+dep:"registry spec "+dep+"  <- 地雷，会让 pnpm 404")));
     const b=((j.dsh||{}).profile||{}).bundles||[];
-    console.log("dep key      : "+dep);
     console.log("bundles      : "+(b.includes(n)?"已登记 ("+b.length+" 项)":"未登记 ("+b.length+" 项)"));
-  ' "$PROFILE/package.json" "$PKG" 2>/dev/null || say "package.json : 无法解析"
+    let lockHas=false;
+    try{ const s=fs.readFileSync(lock,"utf8"); lockHas=new RegExp("(^|[^a-z-])"+n+"@","m").test(s); }catch(e){}
+    console.log("lockfile     : "+(fs.existsSync(lock)?(lockHas?"有 "+n+" 条目":"无 "+n+" 条目（手工铺的包，按项目口径不擅自补）"):"无 pnpm-lock.yaml"));
+  ' "$PROFILE/package.json" "$PKG" "$PROFILE/pnpm-lock.yaml" 2>/dev/null || say "package.json : 无法解析"
   grep -qF "$PIN_MARK" "$PROFILE/cordis.patch.yml" 2>/dev/null && say "permission   : 已固定" || say "permission   : 未固定（补丁后权限预设会拒绝激活 → 跑 pin）"
   local inject_state='(尚未生成)'
   if [ -s "$DSH_HOME/prompt-inject.md" ]; then inject_state="($(wc -c <"$DSH_HOME/prompt-inject.md") 字节)"; fi
@@ -168,14 +201,57 @@ cmd_install() {
   cp "$PROFILE/cordis.patch.yml" "$backup/cordis.patch.yml" 2>/dev/null || true
   ls -1dt "$DSH_HOME/port-backup"/purge-profile-* 2>/dev/null | tail -n +6 | while read -r old; do rm -rf "$old"; done
 
-  if [ "$force" = 0 ] && [ -f "$STATE" ] && grep -q "\"version\":\"$version\"" "$STATE" 2>/dev/null; then
-    say "文件已是 $version，跳过重铺（--force 可强制）"
+  # 干净落位判据（2026-11-11 加）：装出来的目录必须**逐文件等于发布物**。
+  # 为什么需要：早期用源码树铺过一次，发布物 322 个文件，落出来的目录却有 499 个
+  # （多出 test/ 106、packages/ 54、market/ 6、.github/ 6、release-notes.md、
+  #  package-lock.json、NATIVE-PANEL.md、.npmignore、.gitignore 共 177 个 dev 件）。
+  # 多出来的文件功能上不致命，但会：① 版本升级时**旧版残件残留**（上游删掉的文件
+  # 不会跟着消失）；② 让「装的是不是发布物」变得无法用文件集判据核。
+  # cp -R 是叠加式，天然不会删旧文件 —— 所以这里改成「旧目录先移走，再整份铺」。
+  local pkgdir=$PROFILE/node_modules/$PKG
+  local cur_ver=""
+  [ -f "$pkgdir/package.json" ] && cur_ver=$(jq_node 'console.log(require(process.argv[1]).version)' "$pkgdir/package.json" 2>/dev/null || echo unreadable)
+  local extras=1
+  if [ -d "$pkgdir" ]; then
+    local plist=$DSH_HOME/port-backup/.purge-pay.list ilist=$DSH_HOME/port-backup/.purge-inst.list
+    ( cd "$payload/node_modules/$PKG" && find . -type f | LC_ALL=C sort ) > "$plist" 2>/dev/null
+    ( cd "$pkgdir" && find . -type f | LC_ALL=C sort ) > "$ilist" 2>/dev/null
+    extras=$(comm -23 "$ilist" "$plist" 2>/dev/null | wc -l | tr -d ' ')
+    [ -n "$extras" ] || extras=1
+  fi
+
+  if [ "$force" = 0 ] && [ -f "$STATE" ] && [ "$cur_ver" = "$version" ] && [ "$extras" = 0 ]; then
+    say "文件已是 $version 且与发布物逐文件一致，跳过重铺（--force 可强制）"
   else
-    say "铺设插件文件到 profile/node_modules ..."
-    mkdir -p "$PROFILE/node_modules"
-    cp -R "$payload/node_modules/." "$PROFILE/node_modules/" || die "复制插件文件失败"
+    say "铺设插件文件（干净落位：旧目录先移走再整份铺；清掉 $extras 个非发布物/残留文件）..."
+    local stage=$PROFILE/node_modules/.purge-stage-$$ old=$PROFILE/node_modules/.purge-old-$$
+    rm -rf "$stage" "$old"
+    mkdir -p "$stage" || die "无法创建暂存目录 $stage"
+    cp -R "$payload/node_modules/." "$stage/" || die "复制插件文件到暂存失败"
+    [ -d "$pkgdir" ] && mv "$pkgdir" "$old"
+    mv "$stage/$PKG" "$pkgdir" || { [ -d "$old" ] && mv "$old" "$pkgdir"; die "落位失败（已把旧目录移回）"; }
+    rm -rf "$old" "$stage"
+    if [ -d "$PROFILE/node_modules/yaml" ]; then
+      say "  依赖 yaml 已在位（不动它：可能由 pnpm 或其它 kit 管理）"
+    else
+      cp -R "$payload/node_modules/yaml" "$PROFILE/node_modules/yaml" || die "复制 yaml 依赖失败"
+      say "  依赖 yaml 已铺入"
+    fi
     printf '%s\n' "$stamp" > "$STATE"
     say "文件落位完成：$version"
+  fi
+
+  say "== Android 执行器补丁（spawn 不能用 process.execPath）=="
+  # 本机 process.execPath = /apex/com.android.runtime/bin/linker64（termux-exec 的 LD_PRELOAD
+  # 把 exec 重路由到 linker），插件内部凡 spawn/execFile(process.execPath, …) 的路径——
+  # 面板「重启」「回滚」、「红队演练台」、community.js 的 LEGACY 转发——都会变成
+  # `linker64 <js>` → "expected absolute path" / "bad ELF magic"。帧内修不了上游源码，
+  # 所以在**载荷落盘后**按固定锚点打一层可重入补丁（见 tools/patch-android-exec.mjs）。
+  if [ -f "$SELF/tools/patch-android-exec.mjs" ]; then
+    "$NODE" "$SELF/tools/patch-android-exec.mjs" "$PROFILE/node_modules/$PKG" --node "$NODE" || \
+      die "Android 执行器补丁未打上（插件内部 spawn 会崩）"
+  else
+    say "  - 缺 tools/patch-android-exec.mjs，跳过"
   fi
 
   "$NODE" -e '
@@ -183,13 +259,17 @@ cmd_install() {
     const [file,name,version]=process.argv.slice(1);
     const j=JSON.parse(fs.readFileSync(file,"utf8"));
     j.dependencies=j.dependencies||{};
-    j.dependencies[name]=j.dependencies[name]||version;
+    const spec=j.dependencies[name];
+    let dropped=null;
+    if(typeof spec==="string" && !/^(file:|link:|git\+?|https?:|\/|\.)/.test(spec)){ dropped=spec; delete j.dependencies[name]; }
     j.dsh=j.dsh||{}; j.dsh.profile=j.dsh.profile||{};
     const b=Array.isArray(j.dsh.profile.bundles)?j.dsh.profile.bundles:[];
     if(!b.includes(name)) b.push(name);
     j.dsh.profile.bundles=b;
     fs.writeFileSync(file,JSON.stringify(j,null,2)+"\n");
-    console.log("装配已登记：dependencies."+name+"；dsh.profile.bundles 共 "+b.length+" 项");
+    console.log("装配已登记：dsh.profile.bundles 含 "+name+"（共 "+b.length+" 项）");
+    if(dropped) console.log("已去毒：移除 dependencies."+name+"=\""+dropped+"\"（registry 上 404，会让 pnpm 整次安装失败）");
+    else console.log("dependencies 里不放 "+name+"（registry 上没有它；装配只靠 bundles + node_modules 目录）");
   ' "$PROFILE/package.json" "$PKG" "$version" || die "写 profile/package.json 失败"
 
   say "== permission 预设固定 =="
@@ -281,17 +361,43 @@ cmd_verify() {
     [ -d "$DSH_HOME/profiles/node_modules/yaml" ] && say "  PASS  依赖 yaml（profile 共享层）" || { say "  FAIL  缺 yaml"; fail=1; }; }
 
   say "== 2. 装配（package.json）=="
+  # 判据三条（2026-11-11 起）：① dsh.profile.bundles 已选；② dependencies 里没有
+  # registry 形状的地雷键（有 → 下一次 pnpm 安装必 404，实测证据见文件头）；
+  # ③ node_modules 里是实体（不是空壳）。dependencies 缺席是**设计如此**，不判 FAIL。
   if jq_node '
     const j=require(process.argv[1]);const n=process.argv[2];
-    const dep=(j.dependencies||{})[n];const b=((j.dsh||{}).profile||{}).bundles||[];
-    if(!dep||!b.includes(n))process.exit(1);
-  ' "$PROFILE/package.json" "$PKG" 2>/dev/null; then say "  PASS  依赖键与 dsh.profile.bundles 都在"
-  else say "  FAIL  装配缺项（重跑 install）"; fail=1; fi
+    const b=((j.dsh||{}).profile||{}).bundles||[];
+    const dep=(j.dependencies||{})[n];
+    const poisoned=typeof dep==="string" && !/^(file:|link:|git\+?|https?:|\/|\.)/.test(dep);
+    if(!b.includes(n)||poisoned)process.exit(1);
+  ' "$PROFILE/package.json" "$PKG" 2>/dev/null; then say "  PASS  dsh.profile.bundles 已登记；dependencies 无 registry 地雷键"
+  else
+    local poison; poison=$(jq_node '
+      const j=require(process.argv[1]);const n=process.argv[2];
+      const b=((j.dsh||{}).profile||{}).bundles||[];
+      const dep=(j.dependencies||{})[n];
+      const poisoned=typeof dep==="string" && !/^(file:|link:|git\+?|https?:|\/|\.)/.test(dep);
+      if(poisoned)console.log(String(dep)); else if(!b.includes(n))console.log("(bundles 未登记)");
+    ' "$PROFILE/package.json" "$PKG" 2>/dev/null)
+    case "$poison" in
+      "(bundles 未登记)") say "  FAIL  dsh.profile.bundles 里没有 $PKG（重跑 install）" ;;
+      ?*)                 say "  FAIL  dependencies.$PKG=$poison 是 registry 形状 → 任何 pnpm 安装都会 404（跑 install 去毒）" ;;
+      *)                  say "  FAIL  装配判据不通过（重跑 install）" ;;
+    esac
+    fail=1
+  fi
 
   say "== 3. 模块可加载 =="
   if ( cd "$PROFILE" && "$NODE" --input-type=module -e "await import('$PKG')" 2>"$DSH_HOME/port-backup/.purge-import.err" ); then
     say "  PASS  import('$PKG') 成功"
   else say "  FAIL  模块导入失败："; sed 's/^/        /' "$DSH_HOME/port-backup/.purge-import.err" | head -8; fail=1; fi
+  if [ -f "$SELF/tools/patch-android-exec.mjs" ]; then
+    if "$NODE" "$SELF/tools/patch-android-exec.mjs" "$PROFILE/node_modules/$PKG" --node "$NODE" --check >/dev/null 2>&1; then
+      say "  PASS  Android 执行器补丁在位（4 个文件 6 处 spawn 已改写）"
+    else
+      say "  FAIL  Android 执行器补丁缺失/漂移 → 面板「重启/回滚」与演练台会崩（跑 install 重打）"; fail=1
+    fi
+  fi
 
   say "== 4. permission 预设固定 =="
   if grep -qF "$PIN_MARK" "$PROFILE/cordis.patch.yml" 2>/dev/null; then
@@ -380,12 +486,36 @@ cmd_sync() {
   [ -n "$tag" ] || die "上游没有 release（或超出限流）"
   say "上游最新：$tag"
   say "kit 当前：$(kit_version)"
+  # 上游这次改了什么 —— 同步前先看清（这也是判断「补丁表是否变了」的第一手材料）。
+  printf '%s' "$json" | "$NODE" -e '
+    let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{
+      let j={};try{j=JSON.parse(d)}catch(e){}
+      const body=(j.body||"").split("\n").map(s=>s.trimEnd()).filter(Boolean).slice(0,14);
+      if(body.length){console.log("上游说明（节选）：");for(const l of body)console.log("  "+l);}
+    });'
   if [ "$tag" = "v$(kit_version)" ]; then say "已是最新，无需同步。"; return 0; fi
   [ "$check" = 1 ] && { say "（--check：只查不下载）"; return 0; }
   [ -n "$url" ] || die "该 release 没有 dsh-purge-community tgz 资产"
   local tmp=$SELF/.sync; rm -rf "$tmp"; mkdir -p "$tmp"
   say "下载 $url"
-  curl -sSL --max-time 300 -o "$tmp/plugin.tgz" "$url" || die "下载失败"
+  # 下载回落链（2026-11-11 实测）：直连 github.com 会超时（一次 134 s 后连接失败），
+  # 前缀式镜像 https://gh-proxy.com/ 正常（1.2 s / 200）。npm registry 类 URL 不走镜像。
+  # 覆盖：DSH_PAYLOAD_MIRRORS="https://gh-proxy.com/ https://ghproxy.net/"
+  local mirrors=${DSH_PAYLOAD_MIRRORS:-"https://gh-proxy.com/ https://ghproxy.net/"}
+  local cands=("$url") m got_from=""
+  case "$url" in
+    https://github.com/*|https://objects.githubusercontent.com/*)
+      for m in $mirrors; do cands+=("$m$url"); done ;;
+  esac
+  for m in "${cands[@]}"; do
+    say "  试 $m"
+    if curl -sSL --max-time 300 --connect-timeout 15 -o "$tmp/plugin.tgz" "$m" && [ -s "$tmp/plugin.tgz" ]; then
+      got_from=$m; break
+    fi
+    rm -f "$tmp/plugin.tgz"
+  done
+  [ -n "$got_from" ] || die "下载失败（直连与镜像都取不到 $url）"
+  say "  来源：$got_from（$(wc -c <"$tmp/plugin.tgz") 字节）"
   if [ -n "$sha" ]; then
     local got; got=$(sha256sum "$tmp/plugin.tgz" | cut -d' ' -f1)
     [ "$got" = "$sha" ] || die "SHA-256 校验失败（期望 $sha，实得 $got）"
@@ -394,6 +524,12 @@ cmd_sync() {
   rm -rf "$SELF/payload/node_modules/$PKG"
   tar xzf "$tmp/plugin.tgz" -C "$tmp" || die "解包失败"
   mv "$tmp/package" "$SELF/payload/node_modules/$PKG" || die "无法替换载荷目录"
+  # Android 执行器补丁要在**打包之前**落在载荷上，否则 install 之后每台机都得再打一次；
+  # 这里先打一遍（幂等），install 时还会再核一次。
+  if [ -f "$SELF/tools/patch-android-exec.mjs" ]; then
+    "$NODE" "$SELF/tools/patch-android-exec.mjs" "$SELF/payload/node_modules/$PKG" --node "$NODE" || \
+      die "Android 执行器补丁未打上（载荷里的 spawn 锚点变了？看 tools/patch-android-exec.mjs 的锚点表）"
+  fi
   "$NODE" "$SELF/tools/pack-payload.mjs" > "$tmp/pack.json" || die "重打包失败"
   cat "$tmp/pack.json"
   local newsver; newsver=$(jq_node 'console.log(require(process.argv[1]).version)' "$SELF/payload/node_modules/$PKG/package.json")

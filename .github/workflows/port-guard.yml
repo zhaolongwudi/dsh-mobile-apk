@@ -6,12 +6,17 @@
 #   · 本机 git hook 能在 merge/pull 后立刻发现并自愈，但 .git/hooks 不随仓库走，
 #     换机、CI、以及「目录被删导致 protect.sh 自身消失」都必须另有人兜。
 #
-# 本 workflow 只做两件事，都不阻断构建：
-#   ① 指纹核验：port/jet-hub/** 与 tools/protected.sha256 是否一致
-#   ② 存在性核验：port/jet-hub 的关键文件是否都还在（防「整目录被上游删除」传播）
+# 本 workflow 对**每个移植 kit** 做三件事，都不阻断构建：
+#   ① 存在性核验：该 kit 的指纹登记表里每个文件是否都在（防「整目录被上游删除」传播）
+#   ② 指纹核验：port/<kit>/** 与 tools/protected.sha256 是否一致
+#   ③ 未登记文件：只告警（有意新增 → 跑 snapshot 补登记）
+#
+# 受管 kit 由 matrix.kit 列决定；加入新 kit = 在列表里加一行，判据取自该 kit 自己的
+# tools/protected.sha256，所以本文件不需要知道每个 kit 有哪些文件。
 #
 # 定位是**告警**而非门禁：移植件出问题不该让 APK 构建红掉（那会连带毁掉每天的发版节奏），
-# 但必须让人在同一天内看见。判红只标注在 job summary 与 annotation 上，不 exit 1。
+# 但必须让人在同一天内看见。判红只标注在 job summary 与 annotation 上，不 exit 1 ——
+# 例外：某个 kit 的关键文件真的缺了/指纹真的不符，那仍然 exit 1 让 job 变红，见各步注释。
 name: port-guard
 
 on:
@@ -39,58 +44,81 @@ concurrency:
 
 jobs:
   verify:
-    name: 移植件指纹与存在性
+    name: 移植件指纹与存在性（${{ matrix.kit }}）
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        kit:
+          - port/jet-hub
+          - port/dsh-purge
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 0   # 需要历史来定位「移植件最后一次完好」的提交
 
-      - name: 关键文件存在性
+      - name: 关键文件存在性（判据取自该 kit 的指纹登记表）
         run: |
           set -u
-          miss=0
-          for f in port.sh lockfix.mjs manifest.json README.md fetch-payload.sh \
-                   tools/protect.sh tools/protected.sha256 \
-                   githooks/post-merge githooks/post-checkout; do
-            if [ ! -f "port/jet-hub/$f" ]; then
-              echo "::error file=port/jet-hub/$f::移植件缺失：$f（先查是不是被上游的删除传播带走了）"
-              miss=1
-            fi
-          done
-          if [ "$miss" = 1 ]; then
-            echo "### 移植件缺失" >> "$GITHUB_STEP_SUMMARY"
-            echo "上游若删除过 port/ 路径，git merge 会把删除传播过来（实测）。" >> "$GITHUB_STEP_SUMMARY"
-            echo "恢复：在本地检出上跑 \`git log --format=%H -1 -- port/jet-hub\` 找到最后一个完好提交，" >> "$GITHUB_STEP_SUMMARY"
-            echo "然后 \`git checkout <rev> -- port/jet-hub\`。" >> "$GITHUB_STEP_SUMMARY"
+          K="${{ matrix.kit }}"
+          REG="$K/tools/protected.sha256"
+          if [ ! -f "$REG" ]; then
+            echo "::error file=$REG::缺少指纹登记表——该 kit 可能整个被上游的删除传播带走了"
+            {
+              echo "### 移植件缺失：$K"
+              echo ""
+              echo "上游若删除过 port/ 路径，git merge 会把删除传播过来（实测）。"
+              echo "恢复：\`git log --format=%H -1 -- $K\` 找最后一个完好提交，"
+              echo "然后 \`git checkout <rev> -- $K\`。"
+              echo "注意：登记表本身也可能被一起删掉，那就先从历史里捞回 $K/tools/protected.sha256。"
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          echo "关键文件齐全（9 项）"
+          miss=0
+          while read -r _ f; do
+            [ -n "${f:-}" ] || continue
+            if [ ! -f "$K/$f" ]; then
+              echo "::error file=$K/$f::移植件缺失：$f（先查是不是被上游的删除传播带走了）"
+              miss=1
+            fi
+          done < "$REG"
+          if [ "$miss" = 1 ]; then
+            {
+              echo "### 移植件缺失（$K）"
+              echo ""
+              echo "恢复：\`git log --format=%H -1 -- $K\` 找最后一个完好提交，"
+              echo "然后 \`git checkout <rev> -- $K\`；或在本地检出上跑"
+              echo "\`bash $K/tools/protect.sh heal\`。"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "关键文件齐全（$(wc -l < "$REG" | tr -d ' ') 项）"
 
       - name: 指纹核验
         run: |
           set -u
-          cd port/jet-hub
+          K="${{ matrix.kit }}"
+          cd "$K"
           # protected.sha256 用 sha256sum -c 的标准格式，可直接互验。
           if sha256sum -c tools/protected.sha256 --status 2>/dev/null; then
             n=$(wc -l < tools/protected.sha256 | tr -d ' ')
             echo "指纹一致（$n 个文件）"
-            echo "### 移植件指纹一致（$n 个文件）" >> "$GITHUB_STEP_SUMMARY"
+            echo "### 移植件指纹一致（$K，$n 个文件）" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::error::port/jet-hub 指纹不一致——移植件被改动或替换过"
+            echo "::error::$K 指纹不一致——移植件被改动或替换过"
             sha256sum -c tools/protected.sha256 2>&1 | grep -v ': OK$' || true
             {
-              echo "### 移植件指纹不一致"
+              echo "### 移植件指纹不一致（$K）"
               echo ""
               echo '```'
               sha256sum -c tools/protected.sha256 2>&1 | grep -v ': OK$' || true
               echo '```'
               echo ""
               echo "若改动是**有意**的（升级 kit、改脚本），在本地跑"
-              echo "\`bash port/jet-hub/tools/protect.sh snapshot\` 并提交新的 protected.sha256。"
-              echo "若是**非预期**改动，跑 \`bash port/jet-hub/tools/protect.sh heal\` 恢复。"
+              echo "\`bash $K/tools/protect.sh snapshot\` 并提交新的 protected.sha256。"
+              echo "若是**非预期**改动，跑 \`bash $K/tools/protect.sh heal\` 恢复。"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -98,25 +126,29 @@ jobs:
       - name: 登记外的新增文件（只告警）
         run: |
           set -u
-          cd port/jet-hub
+          K="${{ matrix.kit }}"
+          cd "$K"
           # 上游往 port/ 下塞文件时不会进 protected.sha256，这里把它显式点出来。
           # 不判红：新增文件可能是本 PR 有意加的（那就该跑 snapshot 补登记）。
+          # 排除项与 tools/protect.sh 的 list_files 保持一致（payload 二进制、解包缓存、
+          # 本地诊断 out/ 与同步暂存 .sync/ 都不进指纹）。
           extra=$(find . -type f \
                     ! -name 'payload.tar.gz' ! -path './.unpacked/*' ! -path './payload/*' \
+                    ! -path './out/*' ! -path './.sync/*' \
                     ! -name '*.tmp' ! -name '*.sha256.new' ! -name '*.bak-*' ! -name '.DS_Store' \
                   | sed 's|^\./||' | LC_ALL=C sort \
                   | while IFS= read -r f; do
                       grep -q "  $f\$" tools/protected.sha256 2>/dev/null || printf '%s\n' "$f"
                     done)
           if [ -n "$extra" ]; then
-            echo "::warning::port/jet-hub 下有未登记进 protected.sha256 的文件"
+            echo "::warning::$K 下有未登记进 protected.sha256 的文件"
             printf '%s\n' "$extra" | sed 's/^/  /'
             {
-              echo "### 未登记文件（不判红）"
+              echo "### 未登记文件（$K，不判红）"
               echo '```'
               printf '%s\n' "$extra"
               echo '```'
-              echo "确认是有意新增后跑 \`bash port/jet-hub/tools/protect.sh snapshot\` 补登记。"
+              echo "确认是有意新增后跑 \`bash $K/tools/protect.sh snapshot\` 补登记。"
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "无未登记文件"

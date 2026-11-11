@@ -104,6 +104,64 @@ drift_rows() { # 输出 "id<TAB>name"
     });'
 }
 
+# ---------- 零、移植件自身的存活（装配 / 插件文件 / 执行器补丁）----------
+# 宿主补丁之外还有三类会被**外部动作**打断的东西，全是实修里出现过的：
+#   ① 插件包目录被 pnpm 事务清掉 —— 手工铺的包天然活在 lockfile 之外（本仓口径见
+#      port/jet-hub/tools/lockfix.mjs 头注释：缺席的条目不擅自补，只知情）
+#   ② package.json 里长回 registry 形状的依赖键 —— dsh-purge-community 不在 npm 上，
+#      这种键会让任何 pnpm 安装整次 404（port-kit/port.sh 文件头有实证记录）
+#   ③ Android 执行器补丁丢失（载荷被重铺 / 上游换版）—— 面板「重启」「回滚」与
+#      演练台会走 spawn(process.execPath) → linker64 拿 JS 当 ELF 加载 → 必崩
+# 本段只判定，漂移就调 port.sh install（幂等），再复核；不碰宿主补丁那条链。
+SELF_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+PORT_SH="$SELF_DIR/../port.sh"
+[ -f "$PORT_SH" ] || PORT_SH=/storage/emulated/0/Download/DSH/破甲移植/port-kit/port.sh
+PROFILE_DIR="$REAL_HOME/profiles/web"
+EXEC_PATCH="$SELF_DIR/patch-android-exec.mjs"
+
+assembly_problems() { # 输出一行一个问题；无问题则无输出
+  [ -f "$PKG/package.json" ] || printf '%s\n' "插件包缺失：$PKG"
+  "$NODE" -e '
+    const fs=require("node:fs");const [f,n]=process.argv.slice(1);
+    let j={};try{j=JSON.parse(fs.readFileSync(f,"utf8"))}catch(e){console.log("package.json 无法解析："+f);process.exit(0);}
+    const dep=(j.dependencies||{})[n];
+    if(typeof dep==="string" && !/^(file:|link:|git\+?|https?:|\/|\.)/.test(dep))
+      console.log("依赖键地雷：dependencies."+n+"=\""+dep+"\"（registry 形状 → 下一次 pnpm 安装 404）");
+    const b=((j.dsh||{}).profile||{}).bundles||[];
+    if(!b.includes(n)) console.log("装配缺失：dsh.profile.bundles 里没有 "+n);
+  ' "$PROFILE_DIR/package.json" dsh-purge-community 2>/dev/null || printf '%s\n' "读不到 $PROFILE_DIR/package.json"
+  if [ -f "$EXEC_PATCH" ] && [ -f "$PKG/lib/web.js" ]; then
+    "$NODE" "$EXEC_PATCH" "$PKG" --node "$NODE" --check >/dev/null 2>&1 || \
+      printf '%s\n' "执行器补丁缺失/漂移：$EXEC_PATCH --check 未通过（面板重启/回滚/演练台会崩）"
+  fi
+}
+
+ASSEMBLY=$(assembly_problems)
+if [ -n "$ASSEMBLY" ]; then
+  navail=$(printf '%s\n' "$ASSEMBLY" | grep -c .)
+  say "移植件装配体检: 有 $navail 项待处理"
+  printf '%s\n' "$ASSEMBLY" | while IFS= read -r l; do [ -n "$l" ] && say "    $l"; done
+  if [ "$DRY" -eq 1 ]; then
+    say "--dry：不写盘（上面这些项请去掉 --dry 后再跑）。"
+  elif [ -f "$PORT_SH" ]; then
+    say "自愈: 调 port.sh install（幂等：铺文件 + 去毒 + 重打执行器补丁 + 修 permission 固定）..."
+    bash "$PORT_SH" install >"$REAL_HOME/port-backup/guard-install.log" 2>&1 || say "    port.sh install 失败，看 $REAL_HOME/port-backup/guard-install.log"
+    ASSEMBLY2=$(assembly_problems)
+    if [ -z "$ASSEMBLY2" ]; then
+      say "自愈: 已恢复（装配/依赖键/执行器补丁全部在位）。"
+      log "assembly healed"
+    else
+      say "自愈: 未完成，仍剩："
+      printf '%s\n' "$ASSEMBLY2" | while IFS= read -r l; do [ -n "$l" ] && say "    $l"; done
+      log "assembly heal FAILED: $(printf '%s' "$ASSEMBLY2" | tr '\n' '|')"
+    fi
+  else
+    say "自愈: 找不到 port.sh（$PORT_SH），请手工处理上面这些项。"
+  fi
+else
+  say "移植件装配体检: 干净（插件包 / 依赖键 / bundles / 执行器补丁）"
+fi
+
 # ---------- 一、体检 ----------
 read -r STATE OK APPLIED TOTAL PENDING MISSING <<EOF
 $(check)
