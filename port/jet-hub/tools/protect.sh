@@ -101,7 +101,8 @@ cmd_snapshot() {
 }
 
 cmd_verify() {
-  need_repo
+  # 这里**不**要求 git 仓库：指纹比对只用 sha256，离线副本（如从外部存储带过来的
+  # port-kit 目录）也要能体检。只有 heal / install-hooks 才必须找到仓库。
   [ -f "$REG" ] || { bad "缺 tools/protected.sha256（跑 snapshot 生成）"; return 1; }
   local fail=0 changed=0 missing=0 extra=0
   # ① 逐条比对登记过的文件
