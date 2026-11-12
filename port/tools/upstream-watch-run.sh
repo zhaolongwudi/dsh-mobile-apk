@@ -23,7 +23,10 @@ SELF=$(cd -- "$(dirname -- "$0")" && pwd)
 PORT=$(dirname "$SELF")
 REPO=$(dirname "$PORT")
 NODE=${NODE:-node}
-LOG_DIR="$REPO/.work/port-upstream/logs"
+# 运行期产物放仓库外：仓库工作树只留 port/ 里要提交的东西
+DSH_HOME_DIR=${DSH_HOME:-/data/user/0/com.dsharnessmobile.shell/files/home/.dsh}
+RUN_HOME="$DSH_HOME_DIR/port-upstream"
+LOG_DIR="$RUN_HOME/logs"
 mkdir -p "$LOG_DIR"
 STAMP=$(date +%Y%m%d-%H%M%S)
 LOG="$LOG_DIR/$STAMP.log"

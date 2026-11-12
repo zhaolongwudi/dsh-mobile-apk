@@ -56,8 +56,12 @@ const PRUNE = has("--prune");
 const DO_VERIFY = !has("--no-verify");
 const REPO = opt("--repo", "zhaolongwudi/dsh-mobile-apk");
 const BRANCH = opt("--branch", "main");
-const CACHE = path.resolve(opt("--cache", path.join(REPO_DIR, ".work", "upstream-cache")));
-const REPORT_DIR = path.resolve(opt("--report-dir", path.join(REPO_DIR, ".work", "port-upstream")));
+// 运行期产物一律放仓库外（$DSH_HOME/port-upstream）：仓库工作树只留 port/ 里要提交的东西。
+// 早先放 <repo>/.work 的代价是 36 MB 缓存 + 每轮日志在 git status 里常驻为未跟踪噪声。
+const DSH_HOME = process.env.DSH_HOME || "/data/user/0/com.dsharnessmobile.shell/files/home/.dsh";
+const RUN_HOME = path.join(DSH_HOME, "port-upstream");
+const CACHE = path.resolve(opt("--cache", path.join(RUN_HOME, "cache")));
+const REPORT_DIR = path.resolve(opt("--report-dir", path.join(RUN_HOME, "reports")));
 const STATUS_MD = path.join(PORT, "UPSTREAM-STATUS.md");
 
 // dsh-memento 已被 meow-memory 取代并卸载（manifest 里「replaces」写在 meow 一侧），不再跟上游。
