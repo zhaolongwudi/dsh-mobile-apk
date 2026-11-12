@@ -36,6 +36,12 @@ jobs:
           ref: main
           fetch-depth: 0
           lfs: false
+          # 推 .github/workflows/** 需要 `workflows` 权限，而 GITHUB_TOKEN 是 GitHub App
+          # 令牌、拿不到这个权限 —— 2026-11-12 上游那批改了 pr-gate.yml，push 被 GitHub
+          # 拒了（refusing to allow a GitHub App to create or update workflow ...）。
+          # 配了仓库 secret SYNC_TOKEN（PAT：Contents 读写 + Workflows 读写）就用它；
+          # 没配则回落到 github.token，行为与现在一致（批里不含工作流改动时照常能推）。
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
 
       - name: 合并上游 main 并刷新 fork 补丁
         shell: bash
@@ -106,5 +112,18 @@ jobs:
             exit 0
           fi
 
-          git push origin HEAD:main
+          # push 失败要说清是哪一种失败：工作流文件被拒 ≠ 网络/权限泛泛而谈。
+          if ! PUSH_OUT=$(git push origin HEAD:main 2>&1); then
+            echo "$PUSH_OUT"
+            case "$PUSH_OUT" in
+              *'without `workflows` permission'*)
+                echo "::error::push 被拒：本次合并改了 .github/workflows/**，而 GITHUB_TOKEN 是 App 令牌、没有 workflows 权限。修法：加仓库 secret SYNC_TOKEN（PAT，Contents 读写 + Workflows 读写），checkout 会自动改用它；或按 README/本会话记录手工同步一次。"
+                ;;
+              *)
+                echo "::error::push 失败，看上方 git 输出定位"
+                ;;
+            esac
+            exit 1
+          fi
+          echo "$PUSH_OUT"
           echo "已推送到 main：${REMOTE:0:8} -> $(git rev-parse --short HEAD)"
