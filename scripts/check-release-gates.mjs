@@ -156,6 +156,12 @@ const GATES = [
   // build-apk-engine.mjs assemble 复制进 APK 树才有；在 2f 跑它验的是上一次构建的残留甚至缺席。
   // 真实执行点是本地链 assemble 之后的 per-ABI 段（见 scripts/build-apk-013.ps1），sink 断言会核验它确实被调用。
   { script: 'check-snapshot-decode.mjs', ciApk: true, ciCoord: false, needsSnapshot: false, releaseSink: false, sink: 'local-chain' },
+  // issue #1705：glibc loader 的**每 ABI 分档 + 产物断言**。input 是 loader 源文件（由操作者/CI
+  // 从 bionilux Release 取得）与最终 APK 的 lib/<abi>/，两者都不在发布段「注入后快照」的输入面上
+  // ⇒ releaseSink:false，真执行点是两条打包链的终端阶段（build-apk-engine.mjs 里紧跟验签，
+  // 与 #1077 同一「最终产物」关口），由 local-chain / cloud-chain 的 sink 断言核验。
+  // 为什么必须登记：不登记 = 没人调它 = 这条防线静默消失（check-gate-skips 会要求两条链逐项调用）。
+  { script: 'check-native-linux-loader.mjs', ciApk: true, ciCoord: false, needsSnapshot: false, releaseSink: false, sink: 'local-chain' },
   // G.3（0.14.2-fx-2）下沉：它的输入是 plugins/*/lib（源码面产物），**不是发布 tar** ⇒ 留在发布链上
   // 只是把 43.3s 重复付一遍（apk CI 已真跑，见 pr-gate.yml「工具 output.schema」步）。releaseSink:false
   // 只把它从**发布链的 --run 段**移出，声明仍在（不删门禁），由 apk CI 承担执行。
@@ -210,6 +216,10 @@ const GATES = [
   // 两条构建链传注入后 tar 真检、发布链按快照面 --require 跑；CI 无 tar，只跑 --self-test 自证
   // （见 pr-gate.yml 同名步骤）。
   { script: 'check-snapshot-node-shims.mjs', ciApk: true, ciCoord: false, needsSnapshot: true },
+  // #1716 回归面：首启脚本清单必须落在 usr/.dsh-shebang-scripts.txt（壳侧唯一读点）。
+  // 清单缺席不会报错——壳侧静默回落全树遍历（慢设备实测 527 秒 vs 21 秒），
+  // 而构建日志照样打印「清单已生成」。判据只存在于产物 tar 成员上，故 needsSnapshot=true。
+  { script: 'check-shebang-manifest.mjs', ciApk: true, ciCoord: false, needsSnapshot: true },
   // combo 缓存覆盖（0.14.0 启动性能 P1-2 / 引擎树补丁 combo-cache-A3）：注入后快照的每条
   // client.js 必须有 sha256 命中的缓存条目，否则运行期回退现场生成会吞掉全部启动收益。
   { script: 'check-combo-cache.mjs', ciApk: false, ciCoord: false, needsSnapshot: true },
@@ -339,6 +349,10 @@ const REQUIRE_CAPABLE_GATES = new Set([
   // 0.2.2-rc.1 适配新增：工程侧 LFS 指针在普通档记 SKIP 计数，--require 档必须判红
   // （发布链不得 SKIP：要么基座归档在场并逐字节核过，要么不发版）。
   'check-snapshot-node-floor.mjs',
+  // issue #1705 的 check-native-linux-loader.mjs **刻意不登记在这里**：本白名单的语义是
+  // 「在发布段（--run）会跑、且实现 --require」的门禁，而这条是 per-ABI 终端阶段的守卫
+  // （releaseSink:false，sink=local-chain）。登记进来会违反「无死条目」断言（entry 必须在
+  // RELEASE_GATES 里），而「无漏项」断言只对 RELEASE_GATES 生效，故不登记同样不会漏判。
 ])
 const RELEASE_EXCLUDED = GATES.filter((g) => g.releaseSink === false)
 /**
@@ -976,6 +990,24 @@ for (const gate of RUN_GATES) {
     if (STRICT) {
       console.error('CHECK-RELEASE-GATES FAILED：' + gate + ' 需要 --snapshot-dir 的快照面，'
         + '严格发布档不得跳过（shim 的成员类型/模式/内容判据全在产物 tar 上）')
+      process.exit(1)
+    }
+    skipTotal += 1
+    console.log('SKIP(#' + skipTotal + ')  ' + gate + '：发布链未提供快照面（--snapshot-dir 下无 tar）')
+    ran += 1
+    continue
+  }
+  if (gate === 'check-shebang-manifest.mjs') {
+    if (snapshotDir && abis.length > 0) {
+      for (const abi of abis) runGate([join('scripts', gate), snapshotTar(abi)], gate + '(' + abi + ')')
+      ran += 1
+      console.log('PASS  ' + gate + '（' + abis.join(', ') + '）')
+      continue
+    }
+    // 严格发布档：判据全在产物 tar 成员上，没有 tar 就等于没验——与 shim 门禁同口径判红。
+    if (STRICT) {
+      console.error('CHECK-RELEASE-GATES FAILED：' + gate + ' 需要 --snapshot-dir 的快照面，'
+        + '严格发布档不得跳过（脚本清单的落点与内容判据全在产物 tar 上）')
       process.exit(1)
     }
     skipTotal += 1

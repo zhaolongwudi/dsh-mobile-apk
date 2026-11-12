@@ -7,6 +7,12 @@ param(
     [switch]$SkipInject,
     [switch]$ExportSnapshots,              # 0.13.2 增补：导出注入后快照资产 + 一致性门禁（见第 4 步）
     [string]$ForceRejectAbi = "",          # 自检钩子（仅供 check-build-chain-abort --self-test）：强制某 ABI 走拒绝路径，验证整链非 0
+    # issue #1705：glibc loader 源目录（arm64-v8a/ 与 x86_64/ 各一份 libbionilux-loader.so，
+    # 或 bionilux Release 的 bionilux-loader-<arch>.so）。缺省取环境变量
+    # DSH_NATIVE_LINUX_LOADER_DIR；两者都不给时构建参数与产物和改动前完全一致。
+    # 为什么做成显式参数：issue #1705 的「可选改进」——手工 export 环境变量最容易漏，
+    # 而漏掉的表现是「构建全绿、MIUI 上仍 EACCES」，失败点离原因最远。
+    [string]$NativeLinuxLoaderDir = $env:DSH_NATIVE_LINUX_LOADER_DIR,
 [switch]$Fast                          # 2c 快速档（2026-09-05）：单 ABI（缺省 x86_64=MuMu 开发目标）+ 注入链 preset 1
 )
 $ErrorActionPreference = 'Stop'
@@ -525,6 +531,12 @@ foreach ($abi in @('arm64', 'x86_64')) {
     Write-Host "== 快照 node 入口 shim 门禁（$abi）=="
     node (Join-Path $Root "scripts\check-snapshot-node-shims.mjs") $snapIn 2>&1
     if ($LASTEXITCODE -ne 0) { Deny-Abi $abi "快照 node 入口 shim 不自定位 / usr/bin/npm 不是普通文件（多用户设备 pnpm exit 127 / npm 通道 ENOENT）"; continue }
+    # 首启脚本清单落点（#1716 回归面）：壳侧只在 usr/.dsh-shebang-scripts.txt 存在时走清单路径，
+    # 否则回落到全树遍历（慢设备实测 527 秒）。旧构建把清单写到 stage 根 + 另一个文件名，
+    # 归档里根本没有它，收益静默归零而日志照样打印「清单已生成」。
+    Write-Host "== 快照脚本清单门禁（$abi）=="
+    node (Join-Path $Root "scripts\check-shebang-manifest.mjs") $snapIn 2>&1
+    if ($LASTEXITCODE -ne 0) { Deny-Abi $abi "快照缺 usr/.dsh-shebang-scripts.txt（首启前缀重写会回落全树遍历）"; continue }
     # 第三方许可合规（GPL 义务 A1/A2 门禁 2026-08-23）：copyleft 包许可证全文须随快照分发，
     # 矩阵须覆盖 dpkg status 全部包；缺失直接拒绝打包（--- tar 视图：9p 权限不影响判定）。
     # issue #1075：GPL 许可合规门禁。与上面 :388 同一个坑——它失败时打印「THIRD-PARTY CHECK FAILED」
@@ -613,6 +625,24 @@ foreach ($abi in @('arm64', 'x86_64')) {
     # Windows PowerShell drops an empty native argument during splatting. Omitting an empty
     # suffix avoids shifting --clean into the suffix value (and producing versionName 0.14.5--clean).
     if (-not [string]::IsNullOrEmpty($Suffix)) { $engineArgs += @("--suffix", $Suffix) }
+    # issue #1705：把 ABI 与 loader 源目录交给终端引擎。ABI 显式传（本地链的循环变量就是它），
+    # 让引擎按 ABI 分档后再交给 Gradle —— 本仓 Gradle 没有 abiFilters/splits，直接把含两个
+    # ABI 子目录的 loader 目录交过去会让两个 APK 都带上两种 ABI 的 loader。
+    $engineArgs += @("--abi", $abi)
+    # issue #1705 输入档：在**出包之前**判本 ABI 的 loader 在场且架构正确。
+    # 引擎在分档时也会跑同一判据（同一份脚本、同一组判定），这里显式跑的理由有二：
+    #   ① 与其余门禁同形（本链的门禁都是可独立复跑的一行命令），排障时能单独执行；
+    #   ② 「没配 loader 目录」是一条**必须被看见**的事实时，本链打印 SKIP 并计数，
+    #      而不是静默跳过（正式发版前由发布链带 --require 判红）。
+    if ($NativeLinuxLoaderDir) {
+        if (-not (Test-Path $NativeLinuxLoaderDir)) { Deny-Abi $abi "loader 源目录不在场：$NativeLinuxLoaderDir（issue #1705）"; continue }
+        Write-Host "== glibc loader 输入档（$abi）=="
+        node (Join-Path $Root "scripts/check-native-linux-loader.mjs") --source $NativeLinuxLoaderDir --abi $abi
+        if ($LASTEXITCODE -ne 0) { Deny-Abi $abi "glibc loader 源目录里没有架构匹配的 $abi loader（issue #1705）"; continue }
+        $engineArgs += @("--native-linux-loader-dir", $NativeLinuxLoaderDir)
+    } else {
+        Write-Host "== glibc loader 输入档（$abi）：未配置，本次产物不带 loader（MIUI 上 Linux 环境仍会 EACCES）=="
+    }
     node @engineArgs
     if ($LASTEXITCODE -ne 0) { throw "APK build engine failed ($abi)" }
     # 内嵌快照「真的能解压」门禁（0.14.7 / task-9 D-4）。**必须紧跟 assemble**：

@@ -124,6 +124,10 @@ const GATE_SCRIPTS = [
   // 快照内 node 入口 shim（真机实证 2026-10-31）：usr/bin/npm 必须是普通文件、两个 shim 必须自定位
   // 且不含构建期前缀 /data/user/<n>/（多用户设备前缀随 user 变化 ⇒ pnpm exit 127）。
   'check-snapshot-node-shims.mjs',
+  // 首启脚本清单落点（#1716 回归面）：壳侧只在 usr/.dsh-shebang-scripts.txt 存在时走清单路径，
+  // 否则回落全树遍历（慢设备实测 527 秒）。清单写错落点或写错名字时归档里根本没有它，
+  // 而构建日志照样打印「清单已生成」——判据必须落在产物成员上。
+  'check-shebang-manifest.mjs',
   'check-third-party.mjs',
   'check-snapshot-secrets.mjs',
   'elf-check.mjs',
@@ -475,6 +479,8 @@ try {
   // symlink ⇒ pnpm 的 passThruToNpm spawnSync('npm') 落地 ENOENT。与本地链同一份实现（差集必须为 0）。
   log('门禁：快照 node 入口 shim（自定位 + npm 普通文件）…')
   run('node', [gate('check-snapshot-node-shims.mjs'), snapIn])
+  log('门禁：首启脚本清单落点（清单缺席即回落全树遍历）…')
+  run('node', [gate('check-shebang-manifest.mjs'), snapIn])
   log('门禁：第三方许可…')
   run('node', [gate('check-third-party.mjs'), 'x', '--tar', snapIn, '--write-notices', join(ROOT, 'THIRD_PARTY_NOTICES.md')])
   log('门禁：机密（严格：归档不可读/成员为空即失败）…')
@@ -501,6 +507,19 @@ try {
   // ---- 6-8. Shared terminal stage: snapshot/fingerprint + Gradle + copy ----
   const name = `dsh-mobile-apk-v${VER}${SUFFIX}-${ABI}.apk`
   log('构建 APK…')
+  // issue #1705：glibc loader。ABI 显式传（本链的 --abi 值），加载器源目录来自
+  // DSH_NATIVE_LINUX_LOADER_DIR。两条都不给时构建参数与产物和改动前完全一致。
+  // 分档（每 ABI 只暴露自己那一份）与产物断言都在引擎/门禁里，本链不重复实现。
+  const nativeLinuxLoaderDir = process.env.DSH_NATIVE_LINUX_LOADER_DIR
+  if (nativeLinuxLoaderDir) {
+    log('门禁：glibc loader 输入档（' + ABI + '；source=' + nativeLinuxLoaderDir + '）…')
+    // 与本地链同一行命令、同一份脚本：引擎分档时会再跑一次判定，这里显式跑是为了
+    // 「本链的每道门禁都可独立复跑」，且失败点落在出包之前而不是分档中途。
+    run(process.execPath, [gate('check-native-linux-loader.mjs'),
+      '--source', nativeLinuxLoaderDir, '--abi', ABI])
+  } else {
+    log('glibc loader：未配置 DSH_NATIVE_LINUX_LOADER_DIR，本次产物不带 loader（MIUI 上仍会 EACCES）')
+  }
   const finalApk = assembleApk({
     snapshot: snapIn,
     apkDir,
@@ -508,6 +527,8 @@ try {
     artifactName: name,
     suffix: SUFFIX,
     clean: true,
+    abi: ABI,
+    nativeLinuxLoaderDir,
     fingerprintGate: gate('check-snapshot-fingerprint.mjs'),
     log,
   }, (cmd, argv, opts) => spawnSync(cmd, argv, { cwd: ROOT, encoding: 'utf8', stdio: 'inherit', ...opts }))

@@ -131,6 +131,12 @@ jobs:
         run: |
           node scripts/source-build/install-project-dependencies.mjs dsh-client-ui-responsive .deploy-tmp/source-build/webview-probe-lock-resolution-pr.json
           node scripts/verify-webview-015.mjs --self-test
+      - name: 回到底部按钮排版与负控回归
+        if: always()
+        run: node scripts/verify-to-bottom-gutter.mjs --self-test
+      - name: 自定义提供商完整采纳与创建回归
+        if: always()
+        run: cd dsh-client-ui-responsive && npx vitest run tests/custom-provider-form-960.spec.tsx --environment jsdom
       # 控制协议 V2（0.13.8 批 F）：引擎侧编解码的往返等价与体积基线（壳侧 Kotlin 一侧由
       # 本仓单测 + 跨语言往返门禁另守）。
       - name: 协议 V2 往返与体积门禁
@@ -226,6 +232,13 @@ jobs:
       - name: 快照 node 入口 shim 门禁（自证）
         if: always()
         run: node scripts/check-snapshot-node-shims.mjs --self-test
+      # 首启脚本清单落点（#1716 回归面）：壳侧只在 usr/.dsh-shebang-scripts.txt 存在时走清单路径，
+      # 否则静默回落全树遍历（慢设备 527 秒 vs 21 秒）。CI 净检出没有快照 tar（真检由两条构建链
+      # 传注入后 tar 执行），故这里跑 --self-test：正控 + 4 条受控负控（含「清单写在 stage 根」
+      # 这条真实缺陷形态）。
+      - name: 快照脚本清单门禁（自证）
+        if: always()
+        run: node scripts/check-shebang-manifest.mjs --self-test
       # 浏览器语法下限（0.14.1 块C G-1）：CI 无构建树 -> --self-test 四向自证（反向必红/正向必绿/
       # 载荷不触发/工具链在场且版本钉住）。
       - name: 浏览器语法下限门禁（自证）
@@ -319,6 +332,12 @@ jobs:
       # 这只证明门禁具备判别力，不代表最终 APK 的快照已通过解码；正式资产仍由 build-apk.mjs 在组装后以 --require 检验。
       - name: 快照解码器反证自测（合成归档）
         run: node scripts/check-snapshot-decode.mjs --self-test-runtime
+      # issue #1705：glibc loader 门禁的判别力自证。判据全在纯字节面上（ELF 架构 / jni 目录
+      # 命名 / zip 里是否 stored / 是否混入另一 ABI），故离线可跑，不需要 APK 也不需要 SDK。
+      # 为什么放在 CI：这道门禁的真执行点是两条打包链的终端阶段（那里才有 APK），
+      # 而「它本身会不会判红」只有自测能证明 —— 否则一条恒绿的门禁等于没有。
+      - name: glibc loader 门禁自证（ELF 架构 / ABI 分档 / 产物断言）
+        run: node scripts/check-native-linux-loader.mjs --self-test
       # 测试报告留档：失败时可直接下载 HTML 报告（否则只有日志尾部行）。
       - name: 上传单测报告（失败时）
         if: failure()
