@@ -2298,7 +2298,11 @@ function MemorySettingsSection(props) {
     if (spec.type === "model") {
       const groups = modelGroups ?? [];
       const current = typeof raw === "string" ? raw : "";
-      const known = groups.some((g) => g.models.some((m) => m.id === current));
+      // ⚠️ 取值必须是 "provider/model"：宿主侧 parseModelSpec(spec) 按第一个 "/" 切成
+      // { provider, model }（lib/index.js src/delegate.ts）。裸模型 id 只在无斜杠时被
+      // 当作 { model } 兜底，会丢掉 provider 路由 ⇒ 选项值统一拼 `${group.id}/${model.id}`。
+      const optValue = (g, m) => `${g.id}/${m.id}`;
+      const known = groups.some((g) => g.models.some((m) => optValue(g, m) === current || (current.indexOf("/") < 0 && m.id === current)));
       control = el(
         "select",
         {
@@ -2311,7 +2315,7 @@ function MemorySettingsSection(props) {
         },
         el("option", { value: "" }, mmT("（用主模型）", "(use main model)")),
         current !== "" && !known ? el("option", { value: current }, current + mmT("（未知，保留原值）", " (unknown, kept)")) : null,
-        ...groups.map((g) => el("optgroup", { key: g.id, label: g.name }, ...g.models.map((m) => el("option", { key: m.id, value: m.id }, m.name))))
+        ...groups.map((g) => el("optgroup", { key: g.id, label: g.name }, ...g.models.map((m) => el("option", { key: optValue(g, m), value: optValue(g, m) }, m.name))))
       );
     } else if (spec.type === "homeDir") {
       const presets = snap.base?.homeDirPresets;

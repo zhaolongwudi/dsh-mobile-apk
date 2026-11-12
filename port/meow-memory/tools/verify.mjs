@@ -46,7 +46,7 @@ const LAYERS = ['soul', 'user', 'project', 'fact', 'lesson', 'topic', 'rules'];
 const EXPECT_SHA16 = {
   'lib/index.js': 'c1b99f9de90174f2',
   // client.js 是 port 补丁后态（设置页响应式 + 模型下拉 + 目录选择器），不是上游原文
-  'lib/client.js': 'cde5f50835223b47',
+  'lib/client.js': 'c5ff126990867ded',
   'cordis.patch.yml': 'd725feec27202e78',
 };
 

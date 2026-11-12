@@ -181,7 +181,7 @@ kit 本体 `port/dsh-memento/` 保留在仓库里备查（该 kit 的 `port.sh i
 | # | 现象 | 根因 | 修法 |
 |---|---|---|---|
 | ① | 「反思/梦境换模型」等标签被挤成**竖排**（中文逐字换行） | `.meowmm_set_row` 是 flex 行，`.meowmm_set_ctrl{flex:none}` 内含 190px 输入框 + 徽标 + 按钮 ≈340px；窄屏（≈390px）下左侧 `.meowmm_set_rowtext` 只能分到约 40px。**上游代码里没有任何断点/响应式规则** | rowtext 加 `flex:1 1 200px`；ctrl 改 `flex:0 0 auto` + `flex-wrap`；新增 `@media (max-width:600px)`：行纵向堆叠、控件占满整行、输入框全宽 |
-| ② | 模型**只能手填字符串**，没得选、易填错 | `delegate.model` 字段类型是 `str`（纯文本框） | 新增字段类型 `model`，渲染 `<select>`；选项取自宿主 `ctx.remote.session.modelCatalog()`（按 provider 分组 `<optgroup>`）；留空 = 用主模型；未知旧值保留不被静默清空；目录模块级缓存，加载失败安全回落空列表 |
+| ② | 模型**只能手填字符串**，没得选、易填错 | `delegate.model` 字段类型是 `str`（纯文本框） | 新增字段类型 `model`，渲染 `<select>`；选项取自宿主 `ctx.remote.session.modelCatalog()`（按 provider 分组 `<optgroup>`）；**选项值统一拼成 `provider/model`**（宿主 `parseModelSpec` 按第一个 `/` 切成 `{provider, model}`，裸 id 会丢 provider 路由）；留空 = 用主模型；未知旧值保留不被静默清空；目录模块级缓存，加载失败安全回落空列表 |
 | ③ | 记忆保存目录**无法选择** | `projectDir` / `homeDir` 同为纯文本框 | 新增 `hostPickDirectory()`：主路径 `ctx.uiWorkspace.pickDirectory()`，兜底 `ctx.directoryPicker.pick()`；`projectDir` 与 `homeDir`（含自定义行）都挂「选择目录…」按钮；选择器不可用时给提示而不是静默 |
 
 改动只落在**客户端半边** `lib/client.js`（服务端 `lib/index.js` 未动）。
@@ -199,9 +199,9 @@ port/meow-memory/
 
 ```
 上游 client.js            1805a799931c670a
-  ├ 应用 01 补丁（8 hunks）→ cde5f50835223b47
-  ├ overlay/lib/client.js   cde5f50835223b47
-  └ 已装副本                cde5f50835223b47
+  ├ 应用 01 补丁（8 hunks）→ c5ff126990867ded
+  ├ overlay/lib/client.js   c5ff126990867ded
+  └ 已装副本                c5ff126990867ded
 ```
 
 复现：

@@ -32,7 +32,7 @@
     "bytes": 1669699,
     "sha256_16": {
       "lib/index.js": "c1b99f9de90174f2",
-      "lib/client.js": "cde5f50835223b47",
+      "lib/client.js": "c5ff126990867ded",
       "cordis.patch.yml": "d725feec27202e78",
       "package.json": "8a4611e90f54fdd2"
     }
@@ -42,7 +42,7 @@
       "target": "lib/client.js",
       "hunks": 8,
       "upstreamSha256_16": "1805a799931c670a",
-      "patchedSha256_16": "cde5f50835223b47",
+      "patchedSha256_16": "c5ff126990867ded",
       "overlay": "overlay/lib/client.js",
       "upstreamCopy": "patches/client.js.upstream",
       "fixes": [

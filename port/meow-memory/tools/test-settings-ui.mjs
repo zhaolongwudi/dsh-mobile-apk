@@ -60,6 +60,8 @@ t('C② 渲染为 <select>', has(/if \(spec\.type === "model"\)[\s\S]{0,900}?el\
 t('C② 目录来自宿主 modelCatalog', has('remote.session.modelCatalog'));
 t('C② 按 provider 分组（optgroup）', has('el("optgroup", { key: g.id, label: g.name }'));
 t('C② 保留未知旧值（不被静默清空）', has('（未知，保留原值）'));
+t('C② 选项值用 provider/model 形式（parseModelSpec 契约，不能是裸 model id）', has(/\$\{g\.id\}\/\$\{m\.id\}/));
+t('C② 裸模型 id 也认作已知（不重复显示未知项）', has('current.indexOf("/") < 0 && m.id === current'));
 t('C② 模型目录模块级缓存（不重复请求）', has('MODEL_CACHE'));
 t('C② 加载失败安全回落空列表', has(/loadModelCatalog[\s\S]{0,600}?catch \{\s*return \[\];/));
 

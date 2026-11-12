@@ -1,5 +1,5 @@
 --- a/lib/client.js	2026-11-12 13:12:13.989496954 +0800
-+++ b/lib/client.js	2026-11-12 13:12:14.001496954 +0800
++++ b/lib/client.js	2026-11-12 13:19:40.781496784 +0800
 @@ -1989,10 +1989,10 @@
  .meowmm_set_card{background:color-mix(in srgb,currentColor 3%,transparent);border:1px solid var(--dsw-alias-border-l3);border-radius:10px;display:flex;flex-direction:column;gap:8px;padding:12px}
  .meowmm_set_group{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600;margin-top:2px}
@@ -68,7 +68,7 @@
    const flashSaved = () => {
      setSavedAt(Date.now());
      window.setTimeout(() => setSavedAt((t2) => t2 === 0 ? 0 : t2), 4e3);
-@@ -2246,7 +2278,42 @@
+@@ -2246,7 +2278,46 @@
      const mirrorText = typeof raw === "string" ? raw : spec.type === "num" && typeof raw === "number" ? String(raw) : "";
      const draft = drafts[draftKey(spec)];
      let control = null;
@@ -93,7 +93,11 @@
 +    if (spec.type === "model") {
 +      const groups = modelGroups ?? [];
 +      const current = typeof raw === "string" ? raw : "";
-+      const known = groups.some((g) => g.models.some((m) => m.id === current));
++      // ⚠️ 取值必须是 "provider/model"：宿主侧 parseModelSpec(spec) 按第一个 "/" 切成
++      // { provider, model }（lib/index.js src/delegate.ts）。裸模型 id 只在无斜杠时被
++      // 当作 { model } 兜底，会丢掉 provider 路由 ⇒ 选项值统一拼 `${group.id}/${model.id}`。
++      const optValue = (g, m) => `${g.id}/${m.id}`;
++      const known = groups.some((g) => g.models.some((m) => optValue(g, m) === current || (current.indexOf("/") < 0 && m.id === current)));
 +      control = el(
 +        "select",
 +        {
@@ -106,13 +110,13 @@
 +        },
 +        el("option", { value: "" }, mmT("（用主模型）", "(use main model)")),
 +        current !== "" && !known ? el("option", { value: current }, current + mmT("（未知，保留原值）", " (unknown, kept)")) : null,
-+        ...groups.map((g) => el("optgroup", { key: g.id, label: g.name }, ...g.models.map((m) => el("option", { key: m.id, value: m.id }, m.name))))
++        ...groups.map((g) => el("optgroup", { key: g.id, label: g.name }, ...g.models.map((m) => el("option", { key: optValue(g, m), value: optValue(g, m) }, m.name))))
 +      );
 +    } else if (spec.type === "homeDir") {
        const presets = snap.base?.homeDirPresets;
        const saved = typeof raw === "string" && raw !== "" ? raw : "default";
        const isCustomSaved = saved !== "default" && saved !== "dsh-storage" && saved !== "plugin-root";
-@@ -2311,7 +2378,8 @@
+@@ -2311,7 +2382,8 @@
                }
                void apply2(spec, next);
              }
@@ -122,7 +126,7 @@
          )
        );
      } else if (spec.type === "bool") {
-@@ -2417,6 +2485,7 @@
+@@ -2417,6 +2489,7 @@
          "div",
          { className: "meowmm_set_ctrl", style: { display: "flex", gap: "8px", alignItems: "center" } },
          control,
@@ -130,7 +134,7 @@
          el("span", { className: `meowmm_set_badge ${overridden ? "meowmm_set_badge_override" : "meowmm_set_badge_prefill"}` }, t(overridden ? "settings.badge.override" : "settings.badge.default")),
          overridden && snap.writable ? el("button", { className: "meowmm_set_reset", onClick: () => {
            clearDraft(spec);
-@@ -2457,6 +2526,53 @@
+@@ -2457,6 +2530,53 @@
    }
  }
  var probeCtx = null;
