@@ -90,6 +90,20 @@ function patchBuildApk() {
     notes.push('警告：version_code 判定写法已变化，未自动修补，请人工确认 schedule 下不会误跑')
   }
 
+  // ③ schedule 下 matrix.abi 兜底。与 ② 同因：schedule 事件拿不到 workflow_dispatch 的
+  //    default，inputs.abi 是空串，fromJSON 会展开成 [""] —— 于是底座路径被拼成
+  //    base-usr-.tar.xz（根本不存在），构建在「断言底座确实已落地」那一步判红。
+  //    2026-11-12：11-11 与 11-12 两次 schedule 构建都死在这里，手动 dispatch 却正常。
+  // 用双引号字符串而不是模板字面量：YAML 里的 ${{ ... }} 在模板字面量里会被当成插值。
+  const oldMatrix = "abi: ${{ fromJSON(inputs.abi == 'both' && '[\"arm64\",\"x86_64\"]' || format('[\"{0}\"]', inputs.abi)) }}"
+  const newMatrix = "abi: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.abi || 'both') == 'both' && '[\"arm64\",\"x86_64\"]' || format('[\"{0}\"]', inputs.abi)) }}"
+  if (src.includes(oldMatrix)) {
+    src = src.split(oldMatrix).join(newMatrix)
+    notes.push('已修 schedule 下 matrix.abi 为空')
+  } else if (!src.includes(newMatrix) && /inputs\.abi == 'both'/.test(src)) {
+    notes.push('警告：matrix.abi 写法已变化，未自动修补，请人工确认 schedule 下 ABI 不会变成空串')
+  }
+
   if (src === before) return `build-apk.yml 无变化${notes.length ? `（${notes.join('；')}）` : ''}`
   writeFileSync(p, src)
   return `build-apk.yml：${notes.join('；') || '已更新'}`

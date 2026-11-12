@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 60
     strategy:
       matrix:
-        abi: ${{ fromJSON(inputs.abi == 'both' && '["arm64","x86_64"]' || format('["{0}"]', inputs.abi)) }}
+        abi: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.abi || 'both') == 'both' && '["arm64","x86_64"]' || format('["{0}"]', inputs.abi)) }}
       fail-fast: false
     env:
       # build-apk.mjs 依赖本仓库顶层 scripts/plugins/vendor/base；apk 仓库 = $GITHUB_WORKSPACE

@@ -48,6 +48,17 @@ jobs:
           UP=$(git rev-parse upstream/main)
           echo "上游 main: $UP"
 
+          # ── 移植件安全边界（合并前记账）────────────────────────────────
+          # port/ 是 fork 独有内容（上游没有这个目录），只可能被「这次合并」或
+          # 「补丁脚本」误伤。取它整棵子树的 tree 哈希：覆盖、替换、改名、删除、
+          # 内容改写，任一发生哈希都会变 —— 合并后再比一次，变了就判红、不推。
+          PORT_BEFORE=$(git rev-parse --verify -q "HEAD:port" || echo '')
+          if [ -n "$PORT_BEFORE" ]; then
+            echo "port 树哈希（合并前）: ${PORT_BEFORE:0:12}"
+          else
+            echo "::warning::HEAD 下没有 port/ 目录，本次跳过移植件不变性判据"
+          fi
+
           if git merge-base --is-ancestor "$UP" HEAD; then
             echo "上游无新提交，只刷新补丁"
           else
@@ -67,6 +78,19 @@ jobs:
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m "chore: 刷新 fork 补丁（上游 ${UP:0:8}）"
+          fi
+
+          # ── 移植件安全边界（合并后核对）────────────────────────────────
+          # 只在 port/ 的 tree 哈希与合并前逐字节一致时才允许推送：
+          # 被上游覆盖、被别的文件取替、改名或删除，都会在这里判红。
+          if [ -n "$PORT_BEFORE" ]; then
+            PORT_AFTER=$(git rev-parse --verify -q "HEAD:port" || echo '')
+            if [ "$PORT_AFTER" != "$PORT_BEFORE" ]; then
+              echo "::error::这次同步动了 port/（${PORT_BEFORE:0:12} -> ${PORT_AFTER:0:12}）—— 移植件被覆盖/替换/删除，已中止推送，请人工核对"
+              git diff --stat "$PORT_BEFORE" "$PORT_AFTER" || true
+              exit 1
+            fi
+            echo "port 树哈希未变：${PORT_AFTER:0:12}（移植件逐字节原样，未被上游取替）"
           fi
 
           # 推送判据：比「本地 HEAD」与「远端 main 的实际位置」。
