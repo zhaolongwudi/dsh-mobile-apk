@@ -117,7 +117,26 @@ jobs:
             echo "$PUSH_OUT"
             case "$PUSH_OUT" in
               *'without `workflows` permission'*)
-                echo "::error::push 被拒：本次合并改了 .github/workflows/**，而 GITHUB_TOKEN 是 App 令牌、没有 workflows 权限。修法：加仓库 secret SYNC_TOKEN（PAT，Contents 读写 + Workflows 读写），checkout 会自动改用它；或按 README/本会话记录手工同步一次。"
+                # ── 降级：GITHUB_TOKEN 推不了 .github/workflows/** ──────────────
+                # 2026-11-13 实测：只要批次里带了 pr-gate.yml 这类工作流改动，整个 push
+                # 被拒，上游代码/docs/移植件一份都进不来，job 只留一行 remote rejected。
+                # 代码与工作流本是两类东西，这里把它们分开：先把「工作流之外」的全部
+                # 改动推上去，工作流文件留给 SYNC_TOKEN 或手工同步补。
+                echo "::warning::批次含工作流改动且无 workflows 权限，降级为只推非工作流部分"
+                # 从 HEAD 拉临时分支，把 .github/workflows 恢复成远端版本
+                git checkout -q -B _sync_noworkflows
+                git checkout -q FETCH_HEAD -- .github/workflows
+                if [ -n "$(git status --porcelain -- .github/workflows)" ]; then
+                  git commit -q -m "chore: 同步上游（工作流改动因缺 workflows 权限暂缓）"
+                fi
+                if git push origin HEAD:main 2>&1 | tail -3; then
+                  echo "✔ 非工作流部分已推送（上游代码/文档/移植件已到位）"
+                else
+                  echo "::error::非工作流部分推送也失败，看上方 git 输出"
+                  exit 1
+                fi
+                echo "::error::工作流改动（.github/workflows/**）未推送：配 SYNC_TOKEN（PAT，Workflows 读写），或跑 .github/scripts/sync-upstream-now.sh 手工补。"
+                exit 1
                 ;;
               *)
                 echo "::error::push 失败，看上方 git 输出定位"
