@@ -4,6 +4,10 @@
 #   构建由 build-apk.yml 自己的 schedule（UTC 20:30 / 北京 04:30）承担，产物由 nightly-publish.yml 发布。
 #   拆开的原因：构建要读默认分支最新代码，而同一 workflow 里的 job 用的是触发时的旧提交。
 #
+# 推送判据（2026-11-12 修）：比「本地 HEAD」与「远端 main」。不要用 git diff --cached ——
+#   git merge 成功时 merge 提交已经写完，暂存区与 HEAD 必然一致，那个判据恒为「无变化」，
+#   会让脚本在合并成功后 exit 0、跳过 push，runner 一销毁这次同步就消失了（旧脚本的缺陷）。
+#
 # 合并策略：git merge -X theirs。fork 只改 README 与 build-apk.yml 两处，
 #   冲突时一律取上游版本，再交给 inject-fork-patches.mjs 重新打补丁，保证代码永远是上游最新。
 name: daily-sync
@@ -53,15 +57,30 @@ jobs:
               echo "::error::合并上游失败（非文件冲突类错误），请人工处理"
               exit 1
             fi
+            echo "合并完成：上游 ${UP:0:8} 已进入本地历史"
           fi
 
           node .github/scripts/inject-fork-patches.mjs
 
+          # 这里的暂存区判据只负责「补丁刷新是否需要补一个提交」，
+          # 不再兼职判断「要不要推送」—— 合并本身已由 git 写成 merge 提交。
           git add -A
-          if git diff --cached --quiet; then
-            echo "工作区无变化，不提交"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: 刷新 fork 补丁（上游 ${UP:0:8}）"
+          fi
+
+          # 推送判据：比「本地 HEAD」与「远端 main 的实际位置」。
+          # 绝不能用 git diff --cached：git merge 成功时 merge 提交已经写完，暂存区与 HEAD
+          # 必然一致，那个判据恒为「无变化」→ 直接 exit 0，把整个 merge 连同这次 push 一起
+          # 吞掉。2026-11-12 的 run#3 就是这么报着 success、而 fork main 一直落后上游
+          # 54 个提交的根因（runner 一销毁，本地 merge 提交就没了）。
+          # 取不到远端点时按「需要推送」处理：无事可推时 git 自己会报 up-to-date，不会出错，
+          # 而「探测失败就跳过」又会变回这次要修的静默丢同步。
+          REMOTE=$(git fetch --no-tags origin main >/dev/null 2>&1 && git rev-parse FETCH_HEAD || echo '')
+          if [ -n "$REMOTE" ] && [ "$(git rev-parse HEAD)" = "$REMOTE" ]; then
+            echo "本地 HEAD 与远端 main 一致（$(git rev-parse --short HEAD)），无需推送"
             exit 0
           fi
-          git commit -m "chore: 同步上游 ${UP:0:8} 并刷新 fork 补丁"
+
           git push origin HEAD:main
-          echo "已推送到 main"
+          echo "已推送到 main：${REMOTE:0:8} -> $(git rev-parse --short HEAD)"
