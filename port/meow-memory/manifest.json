@@ -1,0 +1,57 @@
+{
+  "kit": "meow-memory",
+  "package": "meow-memory",
+  "version": "0.32.6",
+  "license": "MIT",
+  "replaces": "dsh-memento",
+  "installedAt": "2026-11-12T12:44:00+08:00",
+  "platform": {
+    "dsh": "0.2.2-rc.1",
+    "node": "v24.18.0",
+    "arch": "aarch64",
+    "libc": "bionic",
+    "nativeModules": 0,
+    "runtimeDependencies": 0
+  },
+  "source": {
+    "registry": "https://registry.npmjs.org/meow-memory/-/meow-memory-0.32.6.tgz",
+    "integrity": "sha512-R531WfkAme2tXKuPB6j70G9Vp0lyvopq5vLOdSRkFPdr3Ad8bTq18UHhW6ijctPi2taAz5D0qnU5dHW5fBvaqw==",
+    "shasum": "182fa20747b4402e73d0188b8824eb4fb6af6d36",
+    "repo": "https://github.com/Phant0Meow/dsh-meow-memory",
+    "offlineTarball": "pkg/meow-memory-0.32.6.tgz",
+    "offlineSha256": "92b1e73f697a0142000b85016ddc798b0868ccb3408a748def28a7b00bf62b01"
+  },
+  "landing": {
+    "package": "$DSH_HOME/profiles/web/node_modules/meow-memory",
+    "assembly": "$DSH_HOME/profiles/web/package.json (dependencies + dsh.profile.bundles)",
+    "config": "$DSH_HOME/profiles/web/cordis.patch.yml (- id: meow-memory / config.promptLang)",
+    "store": "<workspace>/.dsh-meow/memory.db"
+  },
+  "installedFiles": {
+    "count": 44,
+    "bytes": 1669699,
+    "sha256_16": {
+      "lib/index.js": "c1b99f9de90174f2",
+      "lib/client.js": "1805a799931c670a",
+      "cordis.patch.yml": "d725feec27202e78",
+      "package.json": "8a4611e90f54fdd2"
+    }
+  },
+  "config": {
+    "promptLang": "zh"
+  },
+  "knownGaps": [
+    "无 engines 声明（对照 dsh-memento 声明了 engines.dsh 版本范围）",
+    "dsh 清单缺 manifestVersion / capabilities / labels",
+    "记忆库默认落工作区（sdcard），非 $DSH_HOME 私有目录",
+    "dream 空闲整理依赖 DSH 进程存活"
+  ],
+  "verified": {
+    "assembly": "dependencies + dsh.profile.bundles 两处均在",
+    "tools": "memory_* 工具组可用",
+    "store": "11 条落库；重启后仍在",
+    "recall": "memory_search 命中已写入条目",
+    "injection": ".dsh-meow/dream-debug.log 记录 pre-step first / turn-stopping",
+    "removedLegacy": "dsh-memento 五处落点全部清理，pnpm-lock 0 引用"
+  }
+}

@@ -53,6 +53,7 @@ jobs:
         kit:
           - port/jet-hub
           - port/dsh-purge
+          - port/meow-memory
     steps:
       - uses: actions/checkout@v4
         with:

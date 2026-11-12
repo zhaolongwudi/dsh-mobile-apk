@@ -1,5 +1,10 @@
 # dsh-memento（长期记忆）在 dsh-mobile-apk 上的移植包
 
+> ⚠️ **本 kit 已退役（2026-11-12）**：本机记忆插件已换成 `meow-memory`，
+> 见 [`port/meow-memory/`](../meow-memory/README.md)。
+> 旧插件卸载与清理明细（五处落点全清、数据已归档）记在那份 README 的第六节。
+> 本 kit 保留备查，`port.sh install` 仍可把旧插件装回去。
+
 把 [PerryLink/dsh-memento](https://github.com/PerryLink/dsh-memento)（DeepSeek Harness 的跨会话长期记忆插件，
 包名 `dsh-memento`，Apache-2.0）移植进本机的 DeepCode（`com.dsharnessmobile.shell`），
 并且**不改 APK、不改上游仓库、不影响每日从上游 fork 的持续迭代**。
