@@ -1,0 +1,173 @@
+diff --git a/index.mjs b/index.mjs
+--- a/index.mjs
++++ b/index.mjs
+@@ -2165,7 +2165,18 @@
+             ...filter,
+             ...(limit === undefined ? {} : { limit }),
+           })
+-          sendPanelJson(res, 200, { entries, total, truncated, budgets: service.budgets(), language: service.language, panel: { enabled: options.panel.enabled } })
++          // [port fix #4] 面板「新增」表单要知道往哪个工作区写：上游响应只有条目与预算。
++          // 这里补两个事实字段（只读、无副作用）：
++          //   workspaces —— 已知工作区键的并集（已有条目的键 + 活会话 cwd），供下拉选择；
++          //   writePolicy —— 当前生效的写策略，面板据此提示「点按钮即落盘」还是「会话已禁用书写」。
++          sendPanelJson(res, 200, {
++            entries, total, truncated,
++            budgets: service.budgets(),
++            language: service.language,
++            panel: { enabled: options.panel.enabled },
++            workspaces: panelWorkspaceKeys(ctx, service),
++            writePolicy: service.writePolicy,
++          })
+         } catch (error) {
+           sendPanelJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+         }
+@@ -2283,6 +2294,108 @@
+         }
+       },
+     }))
++    // [port fix #4] 面板条目写路由：add / replace / remove。
++    //
++    // 上游面板只能看，改一条记忆必须记住 `/memory add|replace|remove` 的语法打命令——
++    // 手机上这是最难受的形态（要回忆子串、要记 track/scope、键盘还挡着列表）。
++    // 本路由把三件事做成按钮/表单可达，但**不复制任何写语义**：全部走 service.add /
++    // replace / remove，因此审批门、预算门、唯一子串定位、审计行、会话事件、usage
++    // 返回值与命令面/工具面完全同形（日后上游改协议，面板自动跟随）。
++    // 人的点击 = 那次审批：gate 尊重会话级 never（403 且零写入），其余一次放行。
++    routeDisposers.push(webServer.register({
++      kind: 'exact',
++      path: '/api/memento/entry-write',
++      handler: async (/** @type {{method?: string, url?: string, headers?: object, on?: Function}} */ req, /** @type {PanelResponse} */ res) => {
++        try {
++          if (!authorizePanelWrite(ctx, req, res)) return
++          if (req.method !== 'POST') {
++            sendPanelJson(res, 405, { ok: false, error: 'method-not-allowed' })
++            return
++          }
++          const body = await readPanelJsonBody(req)
++          const op = body.op
++          if (op !== 'add' && op !== 'replace' && op !== 'remove') {
++            sendPanelJson(res, 400, { ok: false, error: 'op must be "add" | "replace" | "remove"' })
++            return
++          }
++          const session = panelSessionFor(ctx, typeof body.sessionId === 'string' ? body.sessionId : '')
++          const approval = /** @type {{overrideOf?: Function, config?: {policy?: string}}} */ (ctx.approval)
++          const sessionPolicy = typeof approval?.overrideOf === 'function' && session !== undefined
++            ? approval.overrideOf(/** @type {any} */ (session))
++            : undefined
++          const effective = sessionPolicy ?? approval?.config?.policy ?? 'ask'
++          /** @type {{agent: object, gate: () => Promise<string>}} */
++          const write = {
++            agent: { session },
++            gate: async () => {
++              if (effective === 'never') throw new WriteDeniedError('rejected', 'memory writes are disabled for this session (policy "never")')
++              return 'allowed-once'
++            },
++          }
++          if (op === 'add') {
++            const track = body.track
++            const scope = body.scope
++            const text = typeof body.text === 'string' ? body.text : ''
++            if (text.trim().length === 0) {
++              sendPanelJson(res, 400, { ok: false, code: 'INVALID_INPUT', error: 'text must be a non-empty string' })
++              return
++            }
++            // workspace 层必须带会话 cwd 键，否则条目落进空键、任何会话都看不见（安静地写进黑洞）。
++            // 面板没有会话上下文，因此要求前端显式给键：缺键就响亮拒绝，绝不猜一个。
++            const workspaceKey = typeof body.workspaceKey === 'string' && body.workspaceKey.length > 0 ? body.workspaceKey : undefined
++            if (scope === 'workspace' && workspaceKey === undefined) {
++              sendPanelJson(res, 400, {
++                ok: false,
++                code: 'INVALID_INPUT',
++                error: 'workspaceKey is required when scope is "workspace": a workspace entry without a key is invisible to every session; pick one from GET /api/memento/entries.workspaces',
++              })
++              return
++            }
++            const result = await service.add({
++              track, scope, text,
++              source: 'panel',
++              ...(workspaceKey === undefined ? {} : { workspaceKey }),
++              ...(typeof body.agentKey === 'string' && body.agentKey.length > 0 ? { agentKey: body.agentKey } : {}),
++            }, write)
++            sendPanelJson(res, 200, { ok: true, op, entryId: result.entry.id, usage: result.usage })
++            return
++          }
++          if (op === 'replace') {
++            const text = typeof body.text === 'string' ? body.text : ''
++            if (text.trim().length === 0) {
++              sendPanelJson(res, 400, { ok: false, code: 'INVALID_INPUT', error: 'text must be a non-empty string' })
++              return
++            }
++            const result = await service.replace({
++              track: body.track, scope: body.scope,
++              match: typeof body.match === 'string' ? body.match : '',
++              text,
++              source: 'panel',
++              ...(typeof body.workspaceKey === 'string' && body.workspaceKey.length > 0 ? { workspaceKey: body.workspaceKey } : {}),
++              ...(typeof body.agentKey === 'string' && body.agentKey.length > 0 ? { agentKey: body.agentKey } : {}),
++            }, write)
++            sendPanelJson(res, 200, { ok: true, op, entryId: result.entry.id, usage: result.usage })
++            return
++          }
++          const result = await service.remove({
++            track: body.track, scope: body.scope,
++            match: typeof body.match === 'string' ? body.match : '',
++            ...(typeof body.workspaceKey === 'string' && body.workspaceKey.length > 0 ? { workspaceKey: body.workspaceKey } : {}),
++            ...(typeof body.agentKey === 'string' && body.agentKey.length > 0 ? { agentKey: body.agentKey } : {}),
++          }, write)
++          sendPanelJson(res, 200, { ok: true, op, entryId: result.entry.id, usage: result.usage })
++        } catch (error) {
++          // 与裁决路由同一套领域错误到 HTTP 状态的映射（预算 409 / 定位歧义 409 / 越权 403 / 入参 400）。
++          const code = error instanceof MemoryError ? error.code : 'INTERNAL'
++          const status = error instanceof BudgetExceededError
++            || error instanceof EntryNotFoundError
++            || error instanceof AmbiguousMatchError
++            ? 409
++            : (error instanceof WriteDeniedError ? 403 : (error instanceof InvalidInputError || error instanceof NoAgentError ? 400 : 500))
++          sendPanelJson(res, status, { ok: false, code, error: error instanceof Error ? error.message : String(error) })
++        }
++      },
++    }))
+     // 路由随插件生命周期撤销：fiber 卸载时逆序执行全部 disposer。
+     ctx.effect(() => () => {
+       for (const dispose of routeDisposers.splice(0).reverse()) dispose?.()
+@@ -2385,6 +2498,40 @@
+   }
+ }
+ 
++/**
++ * [port fix #4] 面板「新增」表单的工作区候选键。
++ *
++ * 组成：① 已有条目里出现过的非空 workspaceKey（人能在列表里看到的东西，就是可写入面）；
++ * ② 活会话的 cwd 归一化键（宿主 sessions 服务在场时）。去重、排序，上限 50 条
++ * 只影响下拉宽度，不影响写入能力（前端始终允许手填）。
++ * 纯读取，不触碰 store 写面；sessions 服务缺席时静默退化为仅有键集。
++ * @param {import('./types.js').Context} ctx - 插件上下文。
++ * @param {MemoryService} service - ctx.memory。
++ * @returns {string[]} 去重后的工作区键（字典序）。
++ */
++function panelWorkspaceKeys(ctx, service) {
++  /** @type {Set<string>} */
++  const keys = new Set()
++  try {
++    for (const entry of service.store.listEntries()) {
++      if (typeof entry.workspaceKey === 'string' && entry.workspaceKey.length > 0) keys.add(entry.workspaceKey)
++    }
++  } catch {
++    // store 不可读：退化为只有活会话部分（写路由自己会再校验一次）。
++  }
++  try {
++    const sessions = ctx.get('sessions')
++    const live = typeof sessions?.list === 'function' ? sessions.list() : []
++    for (const session of live) {
++      const key = workspaceKeyOf(session?.header?.cwd)
++      if (key.length > 0) keys.add(key)
++    }
++  } catch {
++    // sessions 服务不可读：按无活会话处理。
++  }
++  return [...keys].sort().slice(0, 50)
++}
++
+ export { MemoryError, InvalidInputError, BudgetExceededError, EntryNotFoundError, AmbiguousMatchError, WriteDeniedError, NoAgentError, ProposalNotFoundError, AdapterNotFoundError, AdapterPayloadError }
+ export { buildWriteReason, isMemoryWriteRequest, applyWritePolicy, normalizeWritePolicy, resolveWritePolicy, validateWritePolicies, parseWriteReason }
+ export { openMemoryStore, resolveDbPath }

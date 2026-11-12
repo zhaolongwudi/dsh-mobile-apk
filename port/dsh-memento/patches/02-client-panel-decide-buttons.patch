@@ -1,0 +1,128 @@
+diff --git a/client/client.js b/client/client.js
+--- a/client/client.js
++++ b/client/client.js
+@@ -75,6 +75,10 @@
+  * @property {string} auditEmpty
+  * @property {string} proposals
+  * @property {string} proposalsEmpty
++ * @property {string} approve
++ * @property {string} dismiss
++ * @property {string} deciding
++ * @property {(message: string) => string} decideFailed
+  * @property {(message: string) => string} loadFailed
+  */
+ /** 面板文案（en 源文 / zh 译文；语言来自 /api/memento/entries 响应的 language 字段，缺省 en）。 */
+@@ -94,7 +98,11 @@
+     loading: 'Loading…',
+     auditEmpty: 'Audit is empty',
+     proposals: 'Pending proposals',
+-    proposalsEmpty: 'No pending proposals (generated after session compaction; decide via /memory proposals approve|dismiss)',
++    proposalsEmpty: 'No pending proposals (generated after session compaction; approve or dismiss them with the buttons below)',
++    approve: 'Approve',
++    dismiss: 'Dismiss',
++    deciding: 'Deciding…',
++    decideFailed: (message) => `Decision failed: ${message}`,
+     loadFailed: (message) => `Load failed: ${message} (panel is read-only; make sure the Web profile has dsh-memento loaded)`,
+   },
+   zh: {
+@@ -111,7 +119,11 @@
+     loading: '加载中…',
+     auditEmpty: '审计为空',
+     proposals: '待审批提案',
+-    proposalsEmpty: '暂无待审批提案（会话压缩后自动生成；用 /memory proposals approve|dismiss 处理）',
++    proposalsEmpty: '暂无待审批提案（会话压缩后自动生成；用下面的按钮批准或驳回）',
++    approve: '批准',
++    dismiss: '驳回',
++    deciding: '处理中…',
++    decideFailed: (message) => `裁决失败：${message}`,
+     loadFailed: (message) => `加载失败：${message}（面板只读；请确认 Web profile 已装载 dsh-memento）`,
+   },
+ }
+@@ -216,6 +228,16 @@
+ .mem-bar i { display: block; height: 100%; background: #3f6fae; }
+ .mem-row { margin: 6px 0; color: #9fb4d4; }
+ .mem-audit { margin: 6px 0; padding: 4px 8px; border-left: 2px solid #3f6fae; color: #9fb4d4; font-size: 12px; }
++.mem-proposal { margin: 8px 0; padding: 6px 8px; border: 1px solid #2f4466; border-radius: 8px; background: #131e33; }
++.mem-proposal .mem-audit { border-left: 0; margin: 0 0 6px; padding: 0; }
++.mem-proposal-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
++.mem-proposal-actions button { border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 12px; border: 1px solid #2f4466; }
++.mem-proposal-actions .mem-approve { background: #1d4a2f; color: #a9e8bd; border-color: #2f6b45; }
++.mem-proposal-actions .mem-approve:hover:not(:disabled) { background: #265c3b; }
++.mem-proposal-actions .mem-dismiss { background: #3a1f26; color: #f0b4bd; border-color: #6b2f3a; }
++.mem-proposal-actions .mem-dismiss:hover:not(:disabled) { background: #4a2830; }
++.mem-proposal-actions button:disabled { opacity: .55; cursor: default; }
++.mem-proposal-status { color: #9fb4d4; font-size: 12px; }
+ .mem-empty { color: #8fa8cc; margin: 10px 0; }
+ `
+ 
+@@ -498,8 +520,52 @@
+       slot.innerHTML = `<div class="mem-empty">${S.proposalsEmpty}</div>`
+       return
+     }
++    // [port fix] 每个提案给两个按钮（批准/驳回）。上游此处只有一行文本，所以在面板里
++    // 能看到提案内容却无处确认——这正是「没有审批按钮」的根因。按钮走本插件自注册的
++    // POST /api/memento/proposal-decide，写盘语义与 /memory proposals approve 一致。
+     slot.innerHTML = proposals.map((proposal) =>
+-      `<div class="mem-audit">[${escapeHtml(proposal.id)}] ${escapeHtml(proposal.track)}/${escapeHtml(proposal.scope)} · ${escapeHtml(proposal.text.length > 160 ? `${proposal.text.slice(0, 160)}…` : proposal.text)}</div>`).join('')
++      `<div class="mem-proposal" data-proposal-id="${escapeHtml(proposal.id)}">`
++      + `<div class="mem-audit">[${escapeHtml(proposal.id)}] ${escapeHtml(proposal.track)}/${escapeHtml(proposal.scope)} · ${escapeHtml(proposal.text.length > 160 ? `${proposal.text.slice(0, 160)}…` : proposal.text)}</div>`
++      + `<div class="mem-proposal-actions">`
++      + `<button class="mem-approve" data-action="approve" data-id="${escapeHtml(proposal.id)}">${S.approve}</button>`
++      + `<button class="mem-dismiss" data-action="dismiss" data-id="${escapeHtml(proposal.id)}">${S.dismiss}</button>`
++      + `<span class="mem-proposal-status" data-status-for="${escapeHtml(proposal.id)}"></span>`
++      + `</div></div>`).join('')
++  }
++
++  /**
++   * [port fix] 裁决一条提案（面板按钮的点击处理）。
++   * 按钮进入 pending 态阻止重复点击；成功后就地刷新（提案消失或状态行更新），
++   * 失败把服务端给出的原因原样显示在状态行（含预算超限/已被裁决）。
++   * @param {HTMLButtonElement} button - 被点的按钮。
++   * @returns {Promise<void>}
++   */
++  const decideProposal = async (button) => {
++    const id = button.dataset.id ?? ''
++    const action = button.dataset.action ?? ''
++    if (id.length === 0 || (action !== 'approve' && action !== 'dismiss')) return
++    const row = button.closest('.mem-proposal')
++    const statusLine = row === null ? null : row.querySelector('[data-status-for]')
++    const peers = row === null ? [] : Array.from(row.querySelectorAll('button'))
++    for (const peer of peers) peer.disabled = true
++    if (statusLine !== null) statusLine.textContent = S.deciding
++    try {
++      const response = await fetch('/api/memento/proposal-decide', {
++        method: 'POST',
++        headers: { 'content-type': 'application/json' },
++        body: JSON.stringify({ id, action }),
++      })
++      const data = await response.json().catch(() => ({}))
++      if (!response.ok || data.ok !== true) {
++        throw new Error(typeof data.error === 'string' ? data.error : `HTTP ${response.status}`)
++      }
++      // 批准会写入条目、驳回不写：两种情况都整页刷新（条目/预算/审计/提案四块都变）。
++      await refresh()
++      return
++    } catch (error) {
++      if (statusLine !== null) statusLine.textContent = S.decideFailed(String(error && error.message ? error.message : error))
++    }
++    for (const peer of peers) peer.disabled = false
+   }
+ 
+   const refresh = async () => {
+@@ -537,6 +603,16 @@
+   })
+   closeBtn.addEventListener('click', () => { drawer.style.display = 'none' })
+   refreshBtn.addEventListener('click', () => void refresh())
++  // [port fix] 提案按钮走事件委托：提案槽每次刷新都会重写 innerHTML，
++  // 逐次绑监听会随刷新累积泄漏；委托到稳定的 body 上只绑一次。
++  body.addEventListener('click', (event) => {
++    const target = /** @type {HTMLElement | null} */ (event.target)
++    if (target === null || typeof target.closest !== 'function') return
++    const button = /** @type {HTMLButtonElement | null} */ (target.closest('.mem-proposal-actions button'))
++    if (button === null || button.disabled) return
++    event.preventDefault()
++    void decideProposal(button)
++  })
+   filter.addEventListener('input', () => {
+     lastFilter = filter.value
+     render()

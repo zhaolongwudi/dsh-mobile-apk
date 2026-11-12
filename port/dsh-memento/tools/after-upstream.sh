@@ -51,6 +51,20 @@ else
   bad "① 缺 manifest.json"
 fi
 
+# ── ①b 移植链（上游基线 → 补丁 → overlay → payload → 已装副本）──
+# 只核 payload.tar.gz 的 sha 是不够的：它只能证明「这份载荷没被改坏」，
+# 证明不了「这份载荷确实是上游 + 本 kit 的补丁」（旧版重建路径就是在这一步悄悄丢补丁的）。
+if [ -f "$KIT/tools/verify-overlay.mjs" ]; then
+  if out=$("$NODE" "$KIT/tools/verify-overlay.mjs" 2>&1); then
+    say "①b 移植链四段对齐（上游基线/补丁/overlay/payload/已装副本）"
+  else
+    bad "①b 移植链核对失败："
+    printf '%s\n' "$out" | sed 's/^/        /' | grep -E 'FAIL|错误|Error' | head -6
+  fi
+else
+  say "①b SKIP 无 tools/verify-overlay.mjs（旧版 kit：无法证明载荷含本地补丁）"
+fi
+
 # ── ② profile 装配 ──
 if [ -f "$PROFILE/node_modules/$PKG/package.json" ]; then
   v=$("$NODE" -e 'console.log(require(process.argv[1]).version)' "$PROFILE/node_modules/$PKG/package.json" 2>/dev/null || echo unreadable)

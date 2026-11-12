@@ -1,5 +1,6 @@
---- patches/client.js.orig	2026-11-11 08:55:07.329557889 +0800
-+++ /data/data/com.dsharnessmobile.shell/files/home/.dsh/profiles/web/node_modules/dsh-memento/client/client.js	2026-11-11 08:52:05.509557958 +0800
+diff --git a/client/client.js b/client/client.js
+--- a/client/client.js
++++ b/client/client.js
 @@ -1176,6 +1176,42 @@
            return { ...this.form.shell(), fields, base: this.scope.getSnapshot().base }
          }

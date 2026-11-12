@@ -1,0 +1,200 @@
+diff --git a/index.mjs b/index.mjs
+--- a/index.mjs
++++ b/index.mjs
+@@ -2190,13 +2190,99 @@
+       path: '/api/memento/proposals',
+       handler: async (/** @type {{url?: string}} */ _req, /** @type {PanelResponse} */ res) => {
+         try {
+-          // 只读：仅列出 pending 提案；approve/dismiss 走 /memory 命令（用户动作 + 审批门）。
++          // 只读：仅列出 pending 提案。裁决走 POST /api/memento/proposal-decide（面板按钮），
++          // 或 /memory proposals approve|dismiss（命令行）。
+           sendPanelJson(res, 200, { proposals: service.store.proposalList('pending', 50), language: service.language })
+         } catch (error) {
+           sendPanelJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+         }
+       },
+     }))
++    // [port fix] 面板裁决路由：面板原先只有只读路由，导致「能看到提案内容、没有任何确认按钮」。
++    // 本路由让人在面板里直接批准/驳回一条 pending 提案。
++    //
++    // 关键设计：**批准不复制协议逻辑，而是走 service.add()** —— 与 /memory proposals approve、
++    // memory 工具同一条写路径（校验 → 预算预检 → 审批门 → 预算复审 → 落盘 → 审计行 →
++    // 会话事件 → 返回 usage）。人的点击本身就是那次审批，因此 gate 实现为「尊重会话级硬拒
++    // （policy never）、其余一次放行 allowed-once」——与 makeCommandGate 的预检同语义，
++    // 差别只是不弹审批窗（请求方就是人）。审计行 outcome 因而与命令/工具面同形
++    // （allowed-once (via write gate)），上游日后改协议面板自动跟随。
++    routeDisposers.push(webServer.register({
++      kind: 'exact',
++      path: '/api/memento/proposal-decide',
++      handler: async (/** @type {{method?: string, url?: string, headers?: object, on?: Function}} */ req, /** @type {PanelResponse} */ res) => {
++        try {
++          if (!authorizePanelWrite(ctx, req, res)) return
++          if (req.method !== 'POST') {
++            sendPanelJson(res, 405, { ok: false, error: 'method-not-allowed' })
++            return
++          }
++          const body = await readPanelJsonBody(req)
++          const id = typeof body.id === 'string' ? body.id : ''
++          const action = body.action
++          if (id.length === 0 || (action !== 'approve' && action !== 'dismiss')) {
++            sendPanelJson(res, 400, { ok: false, error: 'id and action ("approve"|"dismiss") are required' })
++            return
++          }
++          const proposal = /** @type {MemoryProposal | null} */ (
++            service.store.proposalList('pending', 1000).find((/** @type {MemoryProposal} */ candidate) => candidate.id === id) ?? null
++          )
++          if (proposal === null) throw new ProposalNotFoundError(id)
++          if (action === 'dismiss') {
++            service.store.proposalDecide(id, 'dismissed')
++            service.store.auditAppend({
++              action: 'proposal-dismissed',
++              track: proposal.track,
++              scope: proposal.scope,
++              entryId: null,
++              text: proposal.text,
++              outcome: 'dismissed (via panel)',
++              source: proposal.source,
++              sessionId: proposal.sessionId,
++            })
++            sendPanelJson(res, 200, { ok: true, action, id })
++            return
++          }
++          // 批准 = 真正落一条记忆，走协议通道：越限在 #assertBudget 处响亮失败（409），绝不截断/部分写入。
++          const session = panelSessionFor(ctx, proposal.sessionId)
++          const approval = /** @type {{overrideOf?: Function, config?: {policy?: string}}} */ (ctx.approval)
++          const sessionPolicy = typeof approval?.overrideOf === 'function' && session !== undefined
++            ? approval.overrideOf(/** @type {any} */ (session))
++            : undefined
++          const effective = sessionPolicy ?? approval?.config?.policy ?? 'ask'
++          const result = await service.add({
++            track: proposal.track,
++            scope: proposal.scope,
++            text: proposal.text,
++            source: 'proposal',
++            workspaceKey: proposal.workspaceKey,
++            agentKey: proposal.agentKey,
++          }, {
++            agent: { session },
++            gate: async () => {
++              // 会话级 never 不可绕过（与 makeCommandGate 的预检同语义）；其余情况人已裁决 ⇒ 一次放行。
++              if (effective === 'never') throw new WriteDeniedError('rejected', 'memory writes are disabled for this session (policy "never")')
++              return 'allowed-once'
++            },
++          })
++          try {
++            service.store.proposalDecide(id, 'approved')
++          } catch (error) {
++            // 并发裁决（另一处面板/命令已决定）：写已经成功，别用提案状态错误掩盖它
++            // —— 与 /memory proposals approve 的纪律一致。
++            if (!(error instanceof ProposalNotFoundError)) throw error
++          }
++          sendPanelJson(res, 200, { ok: true, action, id, entryId: result.entry.id, usage: result.usage })
++        } catch (error) {
++          // 领域错误带稳定 code（预算超限/提案已裁决/会话禁用/入参非法），面板据此给人看原因。
++          const code = error instanceof MemoryError ? error.code : 'INTERNAL'
++          const status = error instanceof BudgetExceededError || error instanceof ProposalNotFoundError
++            ? 409
++            : (error instanceof WriteDeniedError ? 403 : (error instanceof InvalidInputError ? 400 : 500))
++          sendPanelJson(res, status, { ok: false, code, error: error instanceof Error ? error.message : String(error) })
++        }
++      },
++    }))
+     // 路由随插件生命周期撤销：fiber 卸载时逆序执行全部 disposer。
+     ctx.effect(() => () => {
+       for (const dispose of routeDisposers.splice(0).reverse()) dispose?.()
+@@ -2210,6 +2296,95 @@
+   res.end(JSON.stringify(value))
+ }
+ 
++/**
++ * [port fix] 面板写路由的会话句柄：审计行要带 sessionId、会话事件要挂到正确会话上，
++ * 因此批准路径需要一个 session 对象。宿主的 `sessions` 服务（SessionStore）能按 id 取**活会话**；
++ * 提案所属会话可能已不在内存（引擎重启后），此时退化为只带 id 的会话壳：
++ * 它的 append 是显式 no-op（非活会话本来就不能追加事件；`maybeAppendSessionEvent` 另有
++ * 「宿主是否收录 memory/*」的已知类型门，且不消费 append 的返回值），
++ * 这样做的目的是保住审计行的 sessionId 溯源，同时绝不在写已落盘之后再抛错。
++ * @param {import('./types.js').Context} ctx - 插件上下文。
++ * @param {string | null} sessionId - 提案记录的会话 id。
++ * @returns {object} 会话句柄（活会话对象或只带 id 的壳）。
++ */
++function panelSessionFor(ctx, sessionId) {
++  const id = typeof sessionId === 'string' ? sessionId : ''
++  /** @type {object | undefined} */
++  let live
++  try {
++    live = id.length === 0 ? undefined : ctx.get('sessions')?.get?.(id)
++  } catch {
++    // sessions 服务不可读（非 web/headless 装配）：按「无活会话」处理，仍保留 id 溯源。
++    live = undefined
++  }
++  if (live !== undefined && live !== null) return live
++  return { id: id.length === 0 ? null : id, append: () => 'panel:no-live-session' }
++}
++
++/**
++ * [port fix] 面板写路由的准入判定。
++ *
++ * 只读面板路由历史上不校验来源（读自己的记忆库不构成越权）。写路由不同：它能让
++ * 记忆库永久变更，因此按宿主既有的 browser-auth 语义收口——`connection.requestRejection`
++ * 是宿主给插件用的公开判定（同 @dsh-android/dsh-session-delete 的做法）。
++ * connection 服务不在场时（非 web profile）退化放行：此时路由根本没有浏览器可达面。
++ * @param {import('@deepseek-ai/cordis').Context} ctx - Cordis 上下文。
++ * @param {{headers?: object}} req - 请求。
++ * @param {PanelResponse} res - 响应（拒绝时由本函数写完）。
++ * @returns {boolean} true = 可以继续处理。
++ */
++function authorizePanelWrite(ctx, req, res) {
++  /** @type {number | undefined} */
++  let rejection
++  try {
++    const connection = ctx.get('connection')
++    if (typeof connection?.requestRejection === 'function') rejection = connection.requestRejection(req)
++  } catch {
++    // 判定不可读按未授权处理（失败封闭）。
++    rejection = 401
++  }
++  if (rejection === undefined) return true
++  res.writeHead(rejection, { 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8' })
++  res.end(JSON.stringify({ ok: false, error: rejection === 403 ? 'forbidden-origin' : 'unauthenticated' }))
++  return false
++}
++
++/**
++ * [port fix] 读取并解析面板写路由的 JSON 请求体（上限 64 KiB，超限失败封闭）。
++ * @param {{on?: Function, destroy?: Function}} req - 请求流。
++ * @returns {Promise<Record<string, unknown>>} 解析后的对象。
++ */
++async function readPanelJsonBody(req) {
++  const MAX = 64 * 1024
++  /** @type {Buffer[]} */
++  const chunks = []
++  let size = 0
++  /** @type {Buffer} */
++  const body = await new Promise((resolve, reject) => {
++    if (typeof req.on !== 'function') {
++      resolve(Buffer.alloc(0))
++      return
++    }
++    req.on('data', (/** @type {Buffer} */ chunk) => {
++      size += chunk.length
++      if (size > MAX) {
++        reject(new InvalidInputError('panel request body too large'))
++        return
++      }
++      chunks.push(chunk)
++    })
++    req.on('end', () => resolve(Buffer.concat(chunks)))
++    req.on('error', (/** @type {Error} */ error) => reject(error))
++  })
++  if (body.length === 0) return {}
++  try {
++    const parsed = JSON.parse(body.toString('utf8'))
++    return parsed !== null && typeof parsed === 'object' ? parsed : {}
++  } catch {
++    throw new InvalidInputError('panel request body is not valid JSON')
++  }
++}
++
+ export { MemoryError, InvalidInputError, BudgetExceededError, EntryNotFoundError, AmbiguousMatchError, WriteDeniedError, NoAgentError, ProposalNotFoundError, AdapterNotFoundError, AdapterPayloadError }
+ export { buildWriteReason, isMemoryWriteRequest, applyWritePolicy, normalizeWritePolicy, resolveWritePolicy, validateWritePolicies, parseWriteReason }
+ export { openMemoryStore, resolveDbPath }

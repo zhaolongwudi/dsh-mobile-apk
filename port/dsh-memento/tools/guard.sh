@@ -21,9 +21,11 @@
 # 入口**补回去。
 #
 # 退出码：0 = 干净或已修复；1 = 需要人工介入。
-# 用法：
-#   bash guard.sh            # 体检，漂移则自动修复
-#   bash guard.sh --dry      # 只体检，不写盘
+# 用法（2026-11-12 起默认只读：把「体检」当无副作用操作是常见误判，
+# 实测有 AI 审查时直接跑默认模式，被自动 install --force 改了 profile）：
+#   bash guard.sh            # 只体检，不写盘（默认）
+#   bash guard.sh --fix      # 体检，漂移则自动修复（会写 profile 三处落点）
+#   bash guard.sh --dry      # 同默认（兼容旧用法）
 #   bash guard.sh --quiet    # 只输出结论
 # ============================================================================
 set -u
@@ -38,9 +40,10 @@ PKG=dsh-memento
 NODE=${NODE:-$FILES/usr/bin/node}
 LOG="$DSH_HOME/port-backup/memento-guard.log"
 
-DRY=0; QUIET=0
+DRY=1; QUIET=0
 for a in "$@"; do
   case "$a" in
+    --fix) DRY=0 ;;
     --dry) DRY=1 ;;
     --quiet) QUIET=1 ;;
   esac
@@ -131,7 +134,7 @@ fi
 if [ "$drift" = 1 ]; then
   if [ "$DRY" = 1 ]; then
     say ""
-    say "结论：检测到漂移（--dry 未修复）。修复方式：bash $KIT/port.sh install --force"
+    say "结论：检测到漂移（默认只读，未修复）。修复：bash $KIT/port.sh install --force（或 bash $0 --fix）"
     log "DRIFT 检出（--dry），未写盘"
     exit 1
   fi

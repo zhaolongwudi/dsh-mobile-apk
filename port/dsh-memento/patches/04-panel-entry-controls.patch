@@ -1,0 +1,552 @@
+diff --git a/client/client.js b/client/client.js
+--- a/client/client.js
++++ b/client/client.js
+@@ -80,6 +80,33 @@
+  * @property {string} deciding
+  * @property {(message: string) => string} decideFailed
+  * @property {(message: string) => string} loadFailed
++ * @property {string} edit
++ * @property {string} remove
++ * @property {string} save
++ * @property {string} cancel
++ * @property {string} working
++ * @property {string} addTitle
++ * @property {string} addText
++ * @property {string} addPlaceholder
++ * @property {string} track
++ * @property {string} scope
++ * @property {string} workspace
++ * @property {string} workspaceHint
++ * @property {string} trackUser
++ * @property {string} trackAgent
++ * @property {string} scopeGlobal
++ * @property {string} scopeWorkspace
++ * @property {string} add
++ * @property {string} saved
++ * @property {string} removed
++ * @property {(message: string) => string} saveFailed
++ * @property {string} confirmRemove
++ * @property {string} readOnlyHint
++ * @property {string} emptyEntries
++ * @property {string} policyNever
++ * @property {string} cancelHint
++ * @property {string} staleTitle
++ * @property {string} staleBody
+  */
+ /** 面板文案（en 源文 / zh 译文；语言来自 /api/memento/entries 响应的 language 字段，缺省 en）。 */
+ /** @type {Record<string, PanelStrings>} */
+@@ -103,7 +130,34 @@
+     dismiss: 'Dismiss',
+     deciding: 'Deciding…',
+     decideFailed: (message) => `Decision failed: ${message}`,
+-    loadFailed: (message) => `Load failed: ${message} (panel is read-only; make sure the Web profile has dsh-memento loaded)`,
++    loadFailed: (message) => `Load failed: ${message} (make sure the Web profile has dsh-memento loaded)`,
++    edit: 'Edit',
++    remove: 'Delete',
++    save: 'Save',
++    cancel: 'Cancel',
++    working: 'Working…',
++    addTitle: 'Add an entry',
++    addText: 'Text',
++    addPlaceholder: 'What should be remembered…',
++    track: 'Track',
++    scope: 'Scope',
++    workspace: 'Workspace',
++    workspaceHint: 'Workspace entries belong to one workspace; user-global entries are shared by every session.',
++    trackUser: 'user',
++    trackAgent: 'agent',
++    scopeGlobal: 'user-global',
++    scopeWorkspace: 'workspace',
++    add: 'Add',
++    saved: 'Saved',
++    removed: 'Deleted',
++    saveFailed: (message) => `Failed: ${message}`,
++    confirmRemove: 'Delete? Tap again to confirm (an audit row is kept).',
++    readOnlyHint: 'Settings service is unavailable; the panel still writes through the memory protocol.',
++    emptyEntries: 'No entries in this view yet — use the form above to add the first one.',
++    policyNever: 'Writes are disabled for this session (policy "never"). Change the write policy in Settings → dsh-memento.',
++    cancelHint: 'Cancel',
++    staleTitle: 'The running engine still has the old module loaded.',
++    staleBody: 'The panel controls are on disk but not in this process. Restart DeepCode once — plugin modules under node_modules are not hot-reloaded.',
+   },
+   zh: {
+     open: '🧠 记忆',
+@@ -111,7 +165,7 @@
+     refresh: '刷新',
+     close: '关闭',
+     filter: '按文本过滤条目…',
+-    empty: '记忆为空（或没有匹配当前过滤）。写操作请用 memory 工具（审批在 DS 内置审批 UI 完成）。',
++    empty: '暂无记忆条目——用上面的表单添加第一条。',
+     truncated: (shown, total) => `仅显示前 ${shown} 条，共 ${total} 条——用过滤框缩小范围。`,
+     groupCount: (n) => `（${n} 条）`,
+     budgets: '预算用量',
+@@ -124,7 +178,34 @@
+     dismiss: '驳回',
+     deciding: '处理中…',
+     decideFailed: (message) => `裁决失败：${message}`,
+-    loadFailed: (message) => `加载失败：${message}（面板只读；请确认 Web profile 已装载 dsh-memento）`,
++    loadFailed: (message) => `加载失败：${message}（请确认 Web profile 已装载 dsh-memento）`,
++    edit: '编辑',
++    remove: '删除',
++    save: '保存',
++    cancel: '取消',
++    working: '处理中…',
++    addTitle: '新增记忆',
++    addText: '内容',
++    addPlaceholder: '要记住什么…',
++    track: '轨道',
++    scope: '层',
++    workspace: '工作区',
++    workspaceHint: 'workspace 层只属于一个工作区；user-global 层所有会话共享。',
++    trackUser: 'user',
++    trackAgent: 'agent',
++    scopeGlobal: 'user-global',
++    scopeWorkspace: 'workspace',
++    add: '新增',
++    saved: '已保存',
++    removed: '已删除',
++    saveFailed: (message) => `失败：${message}`,
++    confirmRemove: '再点一次确认删除（审计行会保留）。',
++    readOnlyHint: '设置服务不可用；面板写操作仍走记忆协议通道。',
++    emptyEntries: '当前视图还没有条目——用上面的表单添加第一条。',
++    policyNever: '本会话已禁用写入（策略 "never"）。到 设置 → dsh-memento 改写入策略。',
++    cancelHint: '取消',
++    staleTitle: '引擎里还是旧模块，控制面没生效。',
++    staleBody: '面板新增/编辑/删除的代码已经在磁盘上，但当前进程加载的仍是旧模块。请重启一次 DeepCode——node_modules 下的插件模块不走热重载。',
+   },
+ }
+ 
+@@ -222,8 +303,38 @@
+ #mem-body { flex: 1; overflow: auto; padding: 0 12px 12px; }
+ .mem-group { margin: 10px 0 4px; color: #8fb4e8; }
+ .mem-entry { padding: 6px 8px; margin: 3px 0; border: 1px solid #24344d; border-radius: 8px; background: #131e33; }
+-.mem-entry .t { display: block; color: #e6eefb; }
++.mem-entry .t { display: block; color: #e6eefb; white-space: pre-wrap; word-break: break-word; }
+ .mem-entry .m { display: block; color: #9fb4d4; font-size: 11px; }
++.mem-entry-actions { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; align-items: center; }
++.mem-entry-actions button { border-radius: 6px; padding: 5px 12px; cursor: pointer; font-size: 12px; border: 1px solid #2f4466; background: #1c2a42; color: #cfe1f7; }
++.mem-entry-actions button:hover:not(:disabled) { background: #27395a; }
++.mem-entry-actions .mem-del { background: #3a1f26; color: #f0b4bd; border-color: #6b2f3a; }
++.mem-entry-actions .mem-del:hover:not(:disabled) { background: #4a2830; }
++.mem-entry-actions button:disabled { opacity: .55; cursor: default; }
++.mem-entry-status { color: #9fb4d4; font-size: 12px; }
++.mem-editor { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
++.mem-editor textarea { width: 100%; min-height: 88px; box-sizing: border-box; resize: vertical;
++  background: #0b1120; color: #e6eefb; border: 1px solid #2f4466; border-radius: 6px; padding: 6px 8px;
++  font: 12px/1.5 ui-monospace, monospace; }
++.mem-add { margin: 10px 0 4px; padding: 8px; border: 1px solid #24344d; border-radius: 8px; background: #0e1728; }
++.mem-add summary { cursor: pointer; color: #8fb4e8; }
++.mem-add-body { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
++.mem-add-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
++.mem-add-row label { color: #9fb4d4; font-size: 12px; min-width: 3.5em; }
++.mem-add select, .mem-add input, .mem-add textarea { background: #0b1120; color: #d7e2f2; border: 1px solid #2f4466;
++  border-radius: 6px; padding: 5px 8px; font: inherit; min-width: 0; flex: 1 1 8em; }
++.mem-add textarea { width: 100%; min-height: 72px; box-sizing: border-box; resize: vertical; flex-basis: 100%; }
++.mem-add .mem-hint { color: #7d93b4; font-size: 11px; }
++.mem-add-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
++.mem-add-actions button { border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 12px; border: 1px solid #2f6b45; background: #1d4a2f; color: #a9e8bd; }
++.mem-add-actions button:hover:not(:disabled) { background: #265c3b; }
++.mem-add-actions button:disabled { opacity: .55; cursor: default; }
++.mem-add-status { color: #9fb4d4; font-size: 12px; }
++@media (max-width: 640px) {
++  #mem-drawer { width: 100vw; max-width: 100vw; }
++  .mem-entry-actions button { padding: 7px 14px; }
++  .mem-add-row label { min-width: 100%; }
++}
+ .mem-bar { height: 6px; margin: 6px 0 2px; background: #0b1120; border-radius: 3px; overflow: hidden; border: 1px solid #24344d; }
+ .mem-bar i { display: block; height: 100%; background: #3f6fae; }
+ .mem-row { margin: 6px 0; color: #9fb4d4; }
+@@ -239,6 +350,8 @@
+ .mem-proposal-actions button:disabled { opacity: .55; cursor: default; }
+ .mem-proposal-status { color: #9fb4d4; font-size: 12px; }
+ .mem-empty { color: #8fa8cc; margin: 10px 0; }
++.mem-stale { margin: 10px 0; padding: 8px 10px; border: 1px solid #6b5a2f; border-radius: 8px; background: #2a2313; color: #f0dca8; font-size: 12px; line-height: 1.6; }
++.mem-stale b { color: #ffe9b0; font-size: 13px; }
+ `
+ 
+   const openBtn = document.createElement('button')
+@@ -256,6 +369,33 @@
+       <button id="mem-refresh" title="${S.refresh}">${S.refresh}</button>
+       <button id="mem-close" title="${S.close}">✕</button>
+     </div>
++    <details class="mem-add" id="mem-add">
++      <summary>＋ ${S.addTitle}</summary>
++      <div class="mem-add-body">
++        <div class="mem-add-row">
++          <label for="mem-add-track">${S.track}</label>
++          <select id="mem-add-track">
++            <option value="agent">${S.trackAgent}</option>
++            <option value="user">${S.trackUser}</option>
++          </select>
++          <label for="mem-add-scope">${S.scope}</label>
++          <select id="mem-add-scope">
++            <option value="workspace">${S.scopeWorkspace}</option>
++            <option value="user-global">${S.scopeGlobal}</option>
++          </select>
++        </div>
++        <div class="mem-add-row" id="mem-add-ws-row">
++          <label for="mem-add-ws">${S.workspace}</label>
++          <select id="mem-add-ws"></select>
++        </div>
++        <div class="mem-hint" id="mem-add-ws-hint">${S.workspaceHint}</div>
++        <textarea id="mem-add-text" placeholder="${S.addPlaceholder}"></textarea>
++        <div class="mem-add-actions">
++          <button id="mem-add-submit">${S.add}</button>
++          <span class="mem-add-status" id="mem-add-status"></span>
++        </div>
++      </div>
++    </details>
+     <input id="mem-filter" placeholder="${S.filter}" />
+     <div id="mem-body"></div>
+   `
+@@ -270,6 +410,14 @@
+   const refreshBtn = document.getElementById('mem-refresh')
+   const closeBtn = document.getElementById('mem-close')
+   const filterInput = /** @type {HTMLInputElement} */ (document.getElementById('mem-filter'))
++  const addBox = /** @type {HTMLDetailsElement} */ (document.getElementById('mem-add'))
++  const addTrack = /** @type {HTMLSelectElement} */ (document.getElementById('mem-add-track'))
++  const addScope = /** @type {HTMLSelectElement} */ (document.getElementById('mem-add-scope'))
++  const addWorkspace = /** @type {HTMLSelectElement} */ (document.getElementById('mem-add-ws'))
++  const addWsRow = document.getElementById('mem-add-ws-row')
++  const addText = /** @type {HTMLTextAreaElement} */ (document.getElementById('mem-add-text'))
++  const addSubmit = /** @type {HTMLButtonElement} */ (document.getElementById('mem-add-submit'))
++  const addStatus = document.getElementById('mem-add-status')
+ 
+   // ── 悬浮入口：可拖动 + 位置记忆 + 视口夹取 + 双击复位 ─────────────────────
+   /** @returns {{width: number, height: number}} 当前视口尺寸。 */
+@@ -439,6 +587,16 @@
+     refreshBtn.textContent = S.refresh
+     closeBtn.title = S.close
+     filterInput.placeholder = S.filter
++    // [port fix #4] 新增表单的静态文案（元素在 installPanel 里已建好，这里只换文字）。
++    const summary = addBox === null ? null : addBox.querySelector('summary')
++    if (summary !== null) summary.textContent = `＋ ${S.addTitle}`
++    if (addText !== null) addText.placeholder = S.addPlaceholder
++    if (addSubmit !== null) addSubmit.textContent = S.add
++    const labels = addBox === null ? [] : Array.from(addBox.querySelectorAll('.mem-add-row label'))
++    const labelTexts = [S.track, S.scope, S.workspace]
++    for (let i = 0; i < labels.length && i < labelTexts.length; i++) labels[i].textContent = labelTexts[i]
++    const hint = document.getElementById('mem-add-ws-hint')
++    if (hint !== null) hint.textContent = S.workspaceHint
+   }
+ 
+   /** @type {PanelEntryRow[]} */
+@@ -446,6 +604,41 @@
+   let lastFilter = ''
+   let lastTotal = 0
+   let lastTruncated = false
++  /** 正在内联编辑的条目 id（同一时刻只展开一条，避免面板被表单塞满）。 */
++  let editingId = ''
++  /** 服务端下发的工作区候选键（/api/memento/entries 的 workspaces）。 */
++  /** @type {string[]} */
++  let workspaceKeys = []
++  /** 当前生效写策略（服务端 writePolicy）；'never' 时禁用所有写按钮并给出原因。 */
++  let writePolicy = 'auto'
++  /** 服务端仍是未加载写路由的旧模块（引擎未重启）——控制面必须如实说明，不能装作可用。 */
++  let serverStale = false
++
++  /**
++   * 定位一条记忆的可写标识：`/memory` 命令按「唯一子串」定位，而面板拿得到 id，
++   * 但协议通道只认子串。这里不做子串猜测（会撞多命中），而是用**该条目的完整文本**
++   * 作为 match —— 完整文本必然唯一（若真的有两条完全相同，服务端会响亮报
++   * AMBIGUOUS_MATCH，而不是悄悄改错一条）。
++   * @param {PanelEntryRow} entry - 目标条目。
++   * @returns {object} 写路由的公共定位字段。
++   */
++  const locatorOf = (entry) => ({
++    track: entry.track,
++    scope: entry.scope,
++    match: entry.text,
++    ...(typeof entry.workspaceKey === 'string' && entry.workspaceKey.length > 0 ? { workspaceKey: entry.workspaceKey } : {}),
++    ...(typeof entry.agentKey === 'string' && entry.agentKey.length > 0 ? { agentKey: entry.agentKey } : {}),
++  })
++
++  /**
++   * 顶部警示条：当前引擎仍是未加载写路由的旧模块时，明确告知「要重启」。
++   * 之所以做成常驻条而不是一次性 toast：面板每次打开都刷新，状态会持续存在直到重启。
++   * @returns {string} HTML（无异常时为空串）。
++   */
++  const staleBanner = () => {
++    if (!serverStale) return ''
++    return `<div class="mem-stale"><b>${S.staleTitle}</b><br>${S.staleBody}</div>`
++  }
+ 
+   const render = () => {
+     const visible = entries.filter((entry) => entry.text.toLowerCase().includes(lastFilter.toLowerCase()))
+@@ -457,17 +650,39 @@
+       else list.push(entry)
+     }
+     if (visible.length === 0) {
+-      body.innerHTML = `<div class="mem-empty">${S.empty}</div>`
++      body.innerHTML = `${staleBanner()}${entries.length === 0 ? `<div class="mem-empty">${S.emptyEntries}</div>` : `<div class="mem-empty">${S.empty}</div>`}`
+       return
+     }
+-    let html = lastTruncated
+-      ? `<div class="mem-empty">${S.truncated(entries.length, lastTotal)}</div>`
+-      : ''
++    let html = staleBanner()
++    if (lastTruncated) html += `<div class="mem-empty">${S.truncated(entries.length, lastTotal)}</div>`
+     for (const [key, list] of groups) {
+       html += `<div class="mem-group">${key}${S.groupCount(list.length)}</div>`
+       for (const entry of list) {
+         const agentTag = typeof entry.agentKey === 'string' && entry.agentKey.length > 0 ? ` · agent ${escapeHtml(entry.agentKey)}` : ''
+-        html += `<div class="mem-entry"><span class="t">${escapeHtml(entry.text)}</span><span class="m">${escapeHtml(entry.source)}${agentTag} · ${new Date(entry.createdAt).toLocaleString()}</span></div>`
++        const wsTag = entry.scope === 'workspace' && typeof entry.workspaceKey === 'string' && entry.workspaceKey.length > 0
++          ? ` · ${escapeHtml(entry.workspaceKey)}`
++          : ''
++        const disabled = writePolicy === 'never' ? ' disabled' : ''
++        html += `<div class="mem-entry" data-entry-id="${escapeHtml(entry.id)}">`
++        html += `<span class="t">${escapeHtml(entry.text)}</span>`
++        html += `<span class="m">${escapeHtml(entry.source)}${agentTag}${wsTag} · ${new Date(entry.createdAt).toLocaleString()}</span>`
++        if (editingId === entry.id) {
++          // 内联编辑器：整段文本可改（协议 replace 就是整条替换，不做 diff 猜测）。
++          html += `<div class="mem-editor">`
++          html += `<textarea data-edit-text="1">${escapeHtml(entry.text)}</textarea>`
++          html += `<div class="mem-entry-actions">`
++          html += `<button class="mem-save" data-action="save"${disabled}>${S.save}</button>`
++          html += `<button data-action="cancel">${S.cancel}</button>`
++          html += `<span class="mem-entry-status" data-entry-status=""></span>`
++          html += `</div></div>`
++        } else {
++          html += `<div class="mem-entry-actions">`
++          html += `<button data-action="edit"${disabled}>${S.edit}</button>`
++          html += `<button class="mem-del" data-action="remove"${disabled}>${S.remove}</button>`
++          html += `<span class="mem-entry-status" data-entry-status=""></span>`
++          html += `</div>`
++        }
++        html += `</div>`
+       }
+     }
+     body.innerHTML = html
+@@ -568,16 +783,178 @@
+     for (const peer of peers) peer.disabled = false
+   }
+ 
++  /**
++   * [port fix #4] 面板写操作统一入口：POST /api/memento/entry-write。
++   * 服务端把这些 op 全部转成 service.add/replace/remove（审批门 + 预算门 + 审计 + 事件），
++   * 因此这里只管「发请求 → 成功就整页刷新 → 失败把服务端原因写进状态行」。
++   * @param {object} payload - {op, track, scope, text?, match?, workspaceKey?, agentKey?}。
++   * @returns {Promise<{ok: true} | {ok: false, error: string}>} 结果。
++   */
++  const panelWrite = async (payload) => {
++    try {
++      const response = await fetch('/api/memento/entry-write', {
++        method: 'POST',
++        headers: { 'content-type': 'application/json' },
++        body: JSON.stringify(payload),
++      })
++      const data = await response.json().catch(() => ({}))
++      if (!response.ok || data.ok !== true) {
++        return { ok: false, error: typeof data.error === 'string' ? data.error : `HTTP ${response.status}` }
++      }
++      await refresh()
++      return { ok: true }
++    } catch (error) {
++      return { ok: false, error: String(error && error.message ? error.message : error) }
++    }
++  }
++
++  /** 把工作区候选键填进「新增」表单的下拉框（保留用户已选项）。 */
++  const syncWorkspaceOptions = () => {
++    if (addWorkspace === null) return
++    const previous = addWorkspace.value
++    const options = workspaceKeys.length > 0 ? workspaceKeys : ['']
++    addWorkspace.innerHTML = options.map((key) =>
++      `<option value="${escapeHtml(key)}">${escapeHtml(key.length === 0 ? '（无候选）' : key)}</option>`).join('')
++    if (options.includes(previous)) addWorkspace.value = previous
++    else addWorkspace.value = options[0]
++  }
++
++  /**
++   * 处理条目卡片上的「编辑 / 保存 / 取消 / 删除」。
++   * @param {HTMLButtonElement} button - 被点的按钮（带 data-action）。
++   * @returns {Promise<void>}
++   */
++  const handleEntryAction = async (button) => {
++    const card = button.closest('.mem-entry')
++    if (card === null) return
++    const id = card.dataset.entryId ?? ''
++    const entry = entries.find((candidate) => candidate.id === id)
++    if (entry === undefined) return
++    const statusLine = card.querySelector('[data-entry-status]')
++    const action = button.dataset.action ?? ''
++
++    if (action === 'edit') {
++      editingId = id
++      render()
++      // 重绘后卡片是同一 id 的新节点：重新取一次再聚焦（不要把旧节点传进来）。
++      const fresh = body.querySelector(`[data-entry-id="${id}"]`)
++      const editor = fresh === null ? null : fresh.querySelector('[data-edit-text]')
++      editor?.focus?.()
++      return
++    }
++    if (action === 'cancel') {
++      editingId = ''
++      render()
++      return
++    }
++
++    // 删除的第一次点击只是「上膛」，不置 disabled（否则第二次点不了）：
++    // 因此上膛分支必须排在统一禁用之前。
++    if (action === 'remove' && button.dataset.armed !== '1') {
++      // [port fix #4] 两步式确认，不用 window.confirm：应用内 WebView 常把它拦成静默 false
++      // （点「删除」什么都没发生 = 又一次「点不着」）。第一次点把按钮就地切成确认态，
++      // 3 秒后自动复位；再点一次才真发请求。
++      button.dataset.armed = '1'
++      button.textContent = S.confirmRemove
++      if (statusLine !== null) statusLine.textContent = S.confirmRemove
++      window.setTimeout(() => {
++        // 期间可能已被整页重绘替换；节点仍在且仍是上膛态才复位。
++        if (button.dataset.armed === '1') {
++          button.dataset.armed = ''
++          button.textContent = S.remove
++          if (statusLine !== null) statusLine.textContent = ''
++        }
++      }, 3000)
++      return
++    }
++
++    const peers = Array.from(card.querySelectorAll('button'))
++    for (const peer of peers) peer.disabled = true
++
++    if (action === 'save') {
++      const editor = card.querySelector('[data-edit-text]')
++      const next = typeof editor?.value === 'string' ? editor.value : ''
++      if (next.trim().length === 0) {
++        if (statusLine !== null) statusLine.textContent = S.saveFailed('text must be a non-empty string')
++        for (const peer of peers) peer.disabled = false
++        return
++      }
++      if (next === entry.text) {
++        editingId = ''
++        render()
++        return
++      }
++      if (statusLine !== null) statusLine.textContent = S.working
++      // 定位用**改之前的全文**（match 是旧文本）；new text 作为替换内容。
++      const result = await panelWrite({ op: 'replace', ...locatorOf(entry), text: next })
++      editingId = ''
++      // panelWrite 成功时已 refresh() 重绘整页；失败就地写原因。
++      if (!result.ok && statusLine !== null) statusLine.textContent = S.saveFailed(result.error)
++      if (!result.ok) for (const peer of peers) peer.disabled = false
++      return
++    }
++
++    if (action === 'remove') {
++      if (statusLine !== null) statusLine.textContent = S.working
++      const result = await panelWrite({ op: 'remove', ...locatorOf(entry) })
++      if (!result.ok) {
++        if (statusLine !== null) statusLine.textContent = S.saveFailed(result.error)
++        button.dataset.armed = ''
++        button.textContent = S.remove
++        for (const peer of peers) peer.disabled = false
++      }
++    }
++  }
++
++  /** 「新增」提交：读表单 → panelWrite(add) → 成功清空输入。 */
++  const submitAdd = async () => {
++    if (addSubmit === null) return
++    const text = addText === null ? '' : addText.value
++    if (text.trim().length === 0) {
++      if (addStatus !== null) addStatus.textContent = S.saveFailed('text must be a non-empty string')
++      return
++    }
++    // select 未渲染出选中项（或在异常环境下 value 为空）时按默认值取，绝不发空 track/scope：
++    // 空值会被服务端 #assertScope 拒绝，但让用户看到「表单明明填了却报无效」更糟。
++    const track = addTrack === null || addTrack.value === '' ? 'agent' : addTrack.value
++    const scope = addScope === null || addScope.value === '' ? 'workspace' : addScope.value
++    const workspaceKey = addWorkspace === null ? '' : addWorkspace.value
++    if (scope === 'workspace' && workspaceKey.length === 0) {
++      if (addStatus !== null) addStatus.textContent = S.saveFailed('workspaceKey is required for the workspace layer — open this panel once from a session so its workspace appears in the list')
++      return
++    }
++    addSubmit.disabled = true
++    if (addStatus !== null) addStatus.textContent = S.working
++    const result = await panelWrite({
++      op: 'add', track, scope, text,
++      ...(scope === 'workspace' ? { workspaceKey } : {}),
++    })
++    addSubmit.disabled = false
++    if (result.ok) {
++      if (addText !== null) addText.value = ''
++      if (addStatus !== null) addStatus.textContent = S.saved
++      return
++    }
++    if (addStatus !== null) addStatus.textContent = S.saveFailed(result.error)
++  }
++
+   const refresh = async () => {
+     try {
+       const response = await fetch('/api/memento/entries?limit=200')
+       if (!response.ok) throw new Error(`entries ${response.status}`)
+       const data = await response.json()
+       if (data.error !== undefined) throw new Error(data.error)
++      // [port fix #4] 引擎是否加载了带写路由的新服务端：new 服务端的 entries 响应带
++      // workspaces/writePolicy；旧服务端没有这两键。判断出来就明确告知「重启没生效」，
++      // 而不是让人对着没有按钮/点了没反应的面板猜。
++      serverStale = data.workspaces === undefined && data.writePolicy === undefined
+       applyLanguage(data.language)
+       entries = Array.isArray(data.entries) ? data.entries : []
+       lastTotal = Number.isInteger(data.total) ? data.total : entries.length
+       lastTruncated = data.truncated === true
++      workspaceKeys = Array.isArray(data.workspaces) ? data.workspaces : []
++      writePolicy = typeof data.writePolicy === 'string' ? data.writePolicy : 'auto'
++      syncWorkspaceOptions()
+       render()
+       renderBudget(data.budgets)
+       void fetch('/api/memento/audit?limit=20')
+@@ -603,16 +980,29 @@
+   })
+   closeBtn.addEventListener('click', () => { drawer.style.display = 'none' })
+   refreshBtn.addEventListener('click', () => void refresh())
+-  // [port fix] 提案按钮走事件委托：提案槽每次刷新都会重写 innerHTML，
++  // [port fix] 提案与条目按钮都走事件委托：这两个槽每次刷新都会重写 innerHTML，
+   // 逐次绑监听会随刷新累积泄漏；委托到稳定的 body 上只绑一次。
+   body.addEventListener('click', (event) => {
+     const target = /** @type {HTMLElement | null} */ (event.target)
+     if (target === null || typeof target.closest !== 'function') return
+-    const button = /** @type {HTMLButtonElement | null} */ (target.closest('.mem-proposal-actions button'))
+-    if (button === null || button.disabled) return
++    const proposalBtn = /** @type {HTMLButtonElement | null} */ (target.closest('.mem-proposal-actions button'))
++    if (proposalBtn !== null) {
++      if (proposalBtn.disabled) return
++      event.preventDefault()
++      void decideProposal(proposalBtn)
++      return
++    }
++    const entryBtn = /** @type {HTMLButtonElement | null} */ (target.closest('.mem-entry-actions button'))
++    if (entryBtn === null || entryBtn.disabled) return
+     event.preventDefault()
+-    void decideProposal(button)
++    void handleEntryAction(entryBtn)
+   })
++  // 「新增」表单：scope 切到 user-global 时工作区行无关，隐藏以免误解。
++  addScope?.addEventListener('change', () => {
++    const isWorkspace = addScope.value === 'workspace'
++    if (addWsRow !== null) addWsRow.style.display = isWorkspace ? '' : 'none'
++  })
++  addSubmit?.addEventListener('click', () => void submitAdd())
+   filter.addEventListener('input', () => {
+     lastFilter = filter.value
+     render()
+@@ -1139,6 +1529,18 @@
+ .memsec-failed { font-size: 12px; color: var(--dsw-alias-label-error, #e5534b); }
+ .memsec-btn { font: inherit; font-size: 13px; border: 1px solid var(--dsw-alias-border-l2, rgba(128, 128, 128, 0.35)); background: transparent; color: inherit; border-radius: 6px; padding: 4px 14px; cursor: pointer; }
+ .memsec-btn:disabled { opacity: 0.5; cursor: default; }
++/* [port fix #4] 窄屏：数值输入框固定 240px 会让 label 与输入框挤成多行碎块，
++   手机上一律整行；footer 按钮也不再与提示文字抢一行。 */
++@media (max-width: 640px) {
++  .memcard-field { padding: 10px 0; }
++  .memcard-row { flex-direction: column; align-items: stretch; gap: 6px; }
++  .memcard-label { font-size: 13px; }
++  .memcard-input { width: 100%; box-sizing: border-box; padding: 8px 10px; }
++  .memcard-override { align-self: flex-start; }
++  .memcard-reset { align-self: flex-start; padding: 4px 0; }
++  .memsec-footer { flex-wrap: wrap; }
++  .memsec-btn { padding: 8px 16px; }
++}
+ `
+ 
+       /**
