@@ -2,7 +2,7 @@
 
 > 本文件由 `port/tools/upstream-watch.mjs` 自动生成并在推送时覆盖，勿手改。
 
-- 巡检时间：**2026-11-13 02:34:45 +08:00**
+- 巡检时间：**2026-11-13 02:36:41 +08:00**
 - 目标仓库：`zhaolongwudi/dsh-mobile-apk@main`（`port/` 目录）
 - 本次结论：**有 1 个 kit 现装体检 FAIL**，上游有新版 3 个，其中 2 个可否直接升
 
@@ -33,7 +33,7 @@
 ### jet-hub
 
 - 包：`dsh-providers-hub`，本机 `2.21.261110`，上游 `2.23.261112`（上游 2.23.261112 > 本机 2.21.261110）
-- 现装体检：rc=1，FAIL 12 / WARN 0（净 FAIL 4：7 条「缺少依赖」经核对装在包内 node_modules，属 kit verify 在 profile 根上找造成的误报）
+- 现装体检：rc=1，FAIL 12 / WARN 0（净 FAIL 4：7 条经实测核销为 kit verify 的解析误报，逐条见下）
   - 未核销 `FAIL package.json 里缺依赖键或 bundles 选择（重跑 install）`
   - 未核销 `FAIL 声明 ≠ 实装 2.22.261111（重跑 install）`
   - 未核销 `FAIL pnpm-lock.yaml 记的是 (未登记)，实装 2.22.261111 —— 跑 lockfix（否则 pnpm 重装会静默降级）`

@@ -534,6 +534,27 @@ async function publish(tk, summary) {
   });
 
   const changed = locals.filter((f) => remote.get(f.rel)?.sha !== f.sha);
+  // 报告每轮都带新时间戳，若只按字节比，等于每两天白造一个只有时间的提交。
+  // 判据：把「巡检时间」那一行抹掉再比，内容一致就不推。（报告已在本地更新，时间戳以最后一次实质变更时为准）
+  const stripStamp = (buf) => buf.toString("utf8").replace(/^- 巡检时间：.*$/m, "- 巡检时间：（仅实质变更时刷新）");
+  const onlyStamp = [];
+  for (const f of [...changed]) {
+    const r = remote.get(f.rel);
+    if (!r || !/UPSTREAM-STATUS\.md$/.test(f.rel)) continue;
+    try {
+      const remoteBuf = Buffer.from((await api(tk, "GET", `/repos/${REPO}/git/blobs/${r.sha}`)).content, "base64");
+      if (stripStamp(remoteBuf) === stripStamp(f.buf)) {
+        onlyStamp.push(f.rel);
+        // 本地也退回到远端那一行时间戳：让工作树与远端逐字节一致，下一轮快进不会撞本地修改。
+        // 真正的「本轮何时跑的」在 $DSH_HOME/port-upstream/logs/ 与 reports/ 里有，不靠这份报告。
+        const remoteStamp = (remoteBuf.toString("utf8").match(/^- 巡检时间：.*$/m) || [""])[0];
+        const patched = Buffer.from(f.buf.toString("utf8").replace(/^- 巡检时间：.*$/m, remoteStamp), "utf8");
+        fs.writeFileSync(f.abs, patched);
+        changed.splice(changed.indexOf(f), 1);
+      }
+    } catch { /* 取不到就在下面按内容变化处理，不制造假跳过 */ }
+  }
+  if (onlyStamp.length) log(`  仅巡检时间不同，按无实质变化处理：${onlyStamp.join(", ")}`);
   const deletions = [...remote.keys()].filter((p) => !locals.some((f) => f.rel === p));
   log(`  远端 port/ 文件 ${remote.size}，本地 ${locals.length}，内容变化 ${changed.length}，远端多余 ${deletions.length}`);
   if (!changed.length && !(PRUNE && deletions.length)) {
@@ -678,7 +699,7 @@ async function main() {
     if (r.v.commitSha) md.push(`- 上游仓库最新提交：\`${r.v.commitSha.slice(0, 8)}\` ${r.v.commitDate || ""} ${r.v.commitSubject || ""}`);
     if (r.verify.ran) {
       md.push(`- 现装体检：rc=${r.verify.rc}，FAIL ${r.verify.failCount} / WARN ${r.verify.warnCount}${r.verify.total ? ` / 共 ${r.verify.total} 项` : ""}`
-        + (r.verify.downgraded?.length ? `（净 FAIL ${r.verify.realFailCount}：${r.verify.downgraded.length} 条「缺少依赖」经核对装在包内 node_modules，属 kit verify 在 profile 根上找造成的误报）` : ""));
+        + (r.verify.downgraded?.length ? `（净 FAIL ${r.verify.realFailCount}：${r.verify.downgraded.length} 条经实测核销为 kit verify 的解析误报，逐条见下）` : ""));
       for (const f of r.verify.uncleared || []) md.push(`  - 未核销 \`${plain(f)}\``);
       for (const d of r.verify.downgraded || []) md.push(`  - 误报核销：\`${d.dep}\` 实在于 \`${d.at}\` —— ${d.why}`);
     }
