@@ -2280,7 +2280,10 @@ function MemorySettingsSection(props) {
     let control = null;
     // [port fix] 目录类字段的「选择目录…」按钮（走宿主目录选择器）
     const mmT = (zh, en) => (typeof getUiLocale === "function" && String(getUiLocale() ?? "").toLowerCase().startsWith("zh") ? zh : en);
-    const needsPick = spec.key === "projectDir" || spec.key === "homeDir";
+    // [port fix 2026-11-12] 目录选择器只给 homeDir（实例级数据目录，允许绝对路径）。
+    // projectDir 必须相对工作区：memoryDbPath = join(工作区, projectDir)，
+    // 给它接宿主目录选择器会一键写入绝对路径 → 记忆库漂移到「工作区/<绝对路径>」嵌套目录。
+    const needsPick = spec.key === "homeDir";
     const pickBtn = needsPick && snap.writable ? el("button", {
       className: "meowmm_set_pick",
       type: "button",

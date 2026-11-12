@@ -44,9 +44,10 @@ const WORKSPACE = argOf('--workspace', process.cwd());
 const STORE = path.join(WORKSPACE, '.dsh-meow', 'memory.db');
 const LAYERS = ['soul', 'user', 'project', 'fact', 'lesson', 'topic', 'rules'];
 const EXPECT_SHA16 = {
-  'lib/index.js': 'c1b99f9de90174f2',
-  // client.js 是 port 补丁后态（设置页响应式 + 模型下拉 + 目录选择器），不是上游原文
-  'lib/client.js': 'c5ff126990867ded',
+  // index.js 是 port 补丁后态（normalizeProjectDir 兜底），不是上游原文
+  'lib/index.js': 'd0cc1bf9c58c910f',
+  // client.js 是 port 补丁后态（设置页响应式 + 模型下拉 + 目录选择器只给 homeDir），不是上游原文
+  'lib/client.js': '917f0c22bafb62ae',
   'cordis.patch.yml': 'd725feec27202e78',
 };
 
@@ -87,16 +88,27 @@ function section1() {
   record('①包', '零运行时依赖', Object.keys(pj.dependencies || {}).length === 0, JSON.stringify(pj.dependencies || {}));
   record('①包', '声明 dsh.bundle.patch', !!pj.dsh?.bundle?.patch, JSON.stringify(pj.dsh || {}));
 
-  // 逐字节核对：已装 client.js 必须 == kit 的 overlay（即 port 补丁真的铺上了）
-  const overlayPath = path.join(KIT_DIR, 'overlay', 'lib', 'client.js');
-  const installedPath = path.join(PKG_DIR, 'lib', 'client.js');
-  if (fs.existsSync(overlayPath) && fs.existsSync(installedPath)) {
-    const h = (p) => execFileSync('sha256sum', [p], { encoding: 'utf8' }).slice(0, 16);
-    const want = h(overlayPath);
-    const got = h(installedPath);
-    record('①包', 'port 补丁已铺（client.js == overlay）', want === got, want === got ? want : `want ${want} got ${got}`);
+  // 逐字节核对：已装副本必须 == kit 的 overlay 对应文件（即 port 补丁真的铺上了）。
+  // 遍历 overlay/ 而不是硬编码单文件 —— 2026-11-12 的教训：只核对 client.js 时，
+  // 新加的 index.js 兜底既没被铺、也没人发现。
+  const overlayRoot = path.join(KIT_DIR, 'overlay');
+  if (!fs.existsSync(overlayRoot)) {
+    record('①包', 'kit 提供 overlay/', false, '缺 overlay，无法核对 port 补丁', 'warn');
   } else {
-    record('①包', 'kit 提供 overlay/lib/client.js', fs.existsSync(overlayPath), '缺 overlay，无法核对 port 补丁', 'warn');
+    const h = (p) => execFileSync('sha256sum', [p], { encoding: 'utf8' }).slice(0, 16);
+    const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]);
+    for (const ov of walk(overlayRoot)) {
+      const rel = path.relative(overlayRoot, ov);
+      const dst = path.join(PKG_DIR, rel);
+      if (!fs.existsSync(dst)) {
+        record('①包', `port 补丁已铺（${rel}）`, false, `已装包缺 ${rel}`);
+        continue;
+      }
+      const want = h(ov);
+      const got = h(dst);
+      record('①包', `port 补丁已铺（${rel} == overlay）`, want === got, want === got ? want : `want ${want} got ${got}`);
+    }
   }
 }
 

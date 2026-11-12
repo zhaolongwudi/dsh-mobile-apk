@@ -69,11 +69,29 @@ t('C② 加载失败安全回落空列表', has(/loadModelCatalog[\s\S]{0,600}?c
 t('D③ 有 hostPickDirectory 辅助函数', has('async function hostPickDirectory()'));
 t('D③ 主路径走 uiWorkspace.pickDirectory', has('uw?.pickDirectory'));
 t('D③ 兜底走 directoryPicker.pick', has('dp?.pick'));
-t('D③ projectDir / homeDir 都挂选择按钮', has('spec.key === "projectDir" || spec.key === "homeDir"'));
+t('D③ 选择按钮只挂 homeDir（projectDir 必须相对工作区，不给一键选目录）',
+  has('const needsPick = spec.key === "homeDir"') && !has('spec.key === "projectDir" || spec.key === "homeDir"'));
+t('D③ projectDir 行的收窄带注释（防回退）', has('[port fix 2026-11-12] 目录选择器只给 homeDir'));
 t('D③ 通用行里渲染了 pickBtn', has(/"meowmm_set_ctrl", style: \{ display: "flex", gap: "8px", alignItems: "center" \} \},\s*control,\s*pickBtn,/));
 t('D③ homeDir 自定义输入框旁也有 pickBtn', has(/void apply2\(spec, next\);\s*\}\s*\}\)\,?\s*pickBtn/));
 t('D③ 选择器不可用时有提示而非静默', has('目录选择器不可用'));
 t('D③ 按钮文案「选择目录…」', has('选择目录…'));
+
+/* ── E. 修复④：projectDir 绝对路径兜底（服务端半边，2026-11-12 记忆库漂移事故后加） ── */
+const idxPath = path.join(KIT_DIR, 'overlay', 'lib', 'index.js');
+if (!fs.existsSync(idxPath)) {
+  t('E④ overlay/lib/index.js 在位', false, '缺文件 —— 兜底铺不上（port.sh overlay 遍历 overlay/ 才有意义）');
+} else {
+  const idx = fs.readFileSync(idxPath, 'utf8');
+  const ih = (s) => idx.includes(s);
+  t('E④ overlay/lib/index.js 在位', true, `${idx.length} 字符`);
+  t('E④ 有 normalizeProjectDir 兜底函数', ih('function normalizeProjectDir('));
+  t('E④ resolveConfig 用兜底替换裸默认值', ih('projectDir: normalizeProjectDir(c.projectDir)'));
+  t('E④ 绝对路径/盘符/UNC 三种形态都拦', ih('isAbsolute(raw) || /^[A-Za-z]:[\\\\/]/.test(raw) || raw.startsWith("\\\\\\\\")'));
+  t('E④ 回退值是相对名 .dsh-meow', ih('return ".dsh-meow";'));
+  t('E④ 回退时响亮报错而非静默', ih('[meow-memory][port-fix] projectDir 不接受绝对路径'));
+  t('E④ 上游旧的裸默认值写法已移除', !ih('projectDir: c.projectDir ?? ".dsh-meow"'));
+}
 
 /* ── 输出 ───────────────────────────────────────────────────── */
 const fail = results.filter((r) => !r.ok);

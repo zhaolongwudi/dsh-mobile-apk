@@ -123,22 +123,33 @@ cmd_install() {
 }
 
 cmd_overlay() {
-  # 把 kit 的 overlay 铺到已装包上（幂等：先比 sha256，一致就不动）。
-  # 这是「移植补丁」的落点：设置页响应式 + 模型下拉 + 目录选择器。
-  local ov="$KIT_DIR/overlay/lib/client.js"
-  local dst="$PKG_DIR/lib/client.js"
-  if [ ! -f "$ov" ]; then c_warn "kit 无 overlay/lib/client.js，跳过"; return 0; fi
-  if [ ! -f "$dst" ]; then c_bad "未装包，先 install"; return 1; fi
-  local want got
-  want=$(sha256sum "$ov" | cut -d' ' -f1)
-  got=$(sha256sum "$dst" | cut -d' ' -f1)
-  if [ "$want" = "$got" ]; then
-    c_ok "overlay 已就位（client.js ${want:0:16}…）"
-  else
-    cp -av "$dst" "$DSH_HOME/port-backup/meow-client-upstream-$(date +%Y%m%d-%H%M%S).js" >/dev/null 2>&1 || true
-    cp -f "$ov" "$dst"
-    c_ok "overlay 已铺（client.js → ${want:0:16}…）"
-  fi
+  # 把 kit 的 overlay/ 铺到已装包上（幂等：先比 sha256，一致就不动）。
+  # overlay 是「移植补丁」的落点，逐文件遍历 —— 硬编码单个文件会漏铺（2026-11-12 的教训：
+  # 当时只铺 client.js，新加的 index.js 兜底就铺不上）：
+  #   (a) lib/client.js  设置页响应式 + 模型下拉 + 目录选择器（只给 homeDir）
+  #   (b) lib/index.js   projectDir 绝对路径兜底 normalizeProjectDir（记忆库漂移事故后加）
+  [ -d "$KIT_DIR/overlay" ] || { c_warn "kit 无 overlay/，跳过"; return 0; }
+  [ -d "$PKG_DIR" ] || { c_bad "未装包，先 install"; return 1; }
+  local n=0 f rel ov dst want got
+  while IFS= read -r f; do
+    rel="${f#"$KIT_DIR/overlay/"}"
+    ov="$f"; dst="$PKG_DIR/$rel"
+    n=$((n + 1))
+    if [ ! -f "$dst" ]; then
+      c_bad "已装包缺 $rel —— 包结构与 kit 期望不符"
+      continue
+    fi
+    want=$(sha256sum "$ov" | cut -d' ' -f1)
+    got=$(sha256sum "$dst" | cut -d' ' -f1)
+    if [ "$want" = "$got" ]; then
+      c_ok "overlay 已就位（$rel ${want:0:16}…）"
+    else
+      cp -f "$dst" "$DSH_HOME/port-backup/meow-$rel-preoverlay-$(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1 || true
+      cp -f "$ov" "$dst"
+      c_ok "overlay 已铺（$rel → ${want:0:16}…）"
+    fi
+  done < <(find "$KIT_DIR/overlay" -type f | sort)
+  [ "$n" -gt 0 ] || c_warn "overlay/ 为空"
 }
 
 cmd_verify() {

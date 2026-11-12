@@ -1,0 +1,31 @@
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -4285,6 +4285,19 @@
+   }
+   return base;
+ }
++/** [port fix 2026-11-12] projectDir 只接受「相对工作区」的目录名（默认 .dsh-meow）。
++ *  原因：memoryDbPath = join(工作区, projectDir)，path.join 不会让绝对路径覆盖 base，
++ *  而是拼成「工作区/<绝对路径>」的嵌套目录 —— 实测已造成主库 .dsh-meow 的 24 条记忆
++ *  静默失联（插件还当自己是新库，播报「首次建库」）。此兜底对 patch 层直写同样生效
++ *  （validateConfigUserLayer 只覆盖设置页写入链，拦不住 cordis.patch.yml）。 */
++function normalizeProjectDir(value) {
++  const raw = typeof value === "string" && value.trim() !== "" ? value.trim() : ".dsh-meow";
++  if (isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\")) {
++    console.error(`[meow-memory][port-fix] projectDir 不接受绝对路径（收到：${raw}），已回退 .dsh-meow；绝对路径请只给 homeDir。`);
++    return ".dsh-meow";
++  }
++  return raw;
++}
+ function resolveConfig(config2) {
+   const c = config2 ?? {};
+   const d = c.dream ?? {};
+@@ -4292,7 +4305,7 @@
+   const bk = c.backup ?? {};
+   return {
+     enabled: c.enabled ?? true,
+-    projectDir: c.projectDir ?? ".dsh-meow",
++    projectDir: normalizeProjectDir(c.projectDir),
+     homeDir: typeof c.homeDir === "string" ? c.homeDir : void 0,
+     hitTopK: c.hitTopK ?? 2,
+     titleMax: c.titleMax ?? 40,

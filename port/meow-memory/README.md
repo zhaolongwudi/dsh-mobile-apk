@@ -108,19 +108,33 @@ if (mountDisposer === null) pollTimer2 = setInterval(() => { attach(); attempts 
 | `disabledWorkspaces` | `[]` | 停用工作区列表 |
 | `dream.enabled` / `dream.idleMinutes` | `true` / `180` | 空闲整理 |
 
-### ③ 的可选加固（把记忆库挪出 sdcard）
+### ③ 的可选加固（**旧方案已作废**，2026-11-12 事故后改写）
+
+> ⛔ **不要再把 `projectDir` 设成绝对路径来挪库。**
+>
+> 2026-11-12 照旧方案执行：`projectDir` 被设成 `/storage/emulated/0/Download/DSH/记忆保存目录`，
+> 而 `memoryDbPath = join(工作区, projectDir)` **不会**让绝对路径覆盖 base，而是拼成
+> `<workspace>/storage/emulated/0/.../记忆保存目录/memory.db` 的**嵌套库** ⇒
+> 主库 `<workspace>/.dsh-meow` 的 **24 条记忆全部静默失联**（插件还当自己是新库，
+> 在会话里播报「首次建库」）。恢复：把 `projectDir` 改回相对名 `.dsh-meow` 后重载即可，
+> 数据本体未受损。
+>
+> kit 已加**双重防护**，再犯也拦得住：
+> · `overlay/lib/index.js` 的 `normalizeProjectDir()` —— 绝对路径/盘符/UNC 一律回退 `.dsh-meow` 并响亮报错（对 patch 层直写同样生效）
+> · 设置页目录选择器**只挂 `homeDir` 行**（`projectDir` 行不再提供一键选目录）
+
+**正确做法（二选一）**
 
 ```sh
-K=$(dirname "$0")          # port/meow-memory
-W=<workspace 绝对路径>
-# 1) 先备份
-cp -av "$W/.dsh-meow" "$HOME/.dsh/port-backup/meow-store-$(date +%Y%m%d-%H%M%S)"
-# 2) 在 cordis.patch.yml 的 meow-memory 段加 projectDir（绝对路径，键要给全）
-#    - id: meow-memory
-#      config:
-#        promptLang: zh
-#        projectDir: /data/data/com.dsharnessmobile.shell/files/home/.dsh/meow-store
-# 3) 搬库后再重载插件，然后 port.sh verify 复核条目数
+# A) 什么都不做 —— 记忆库留在 <workspace>/.dsh-meow
+#    projectDir 只能是相对名；打开 backup.enabled 后 dream 收尾会产出 memory.db.bak 快照。
+
+# B) 真想让它离开 sdcard —— 移的是【工作区整体】，不是 projectDir：
+#    把工作区放到 app 私有目录（如 $DSH_HOME/ws/<name>）再作为工作区打开，记忆库随工作区过去；
+#    或等上游支持跨工作区库。
+
+# 无论哪种，改库位置前先冷备（db + -wal + -shm 三件一起，别只复制 .db）：
+cp -av "<workspace>/.dsh-meow" "$HOME/.dsh/port-backup/meow-store-$(date +%Y%m%d-%H%M%S)"
 ```
 
 ---
@@ -174,7 +188,7 @@ kit 本体 `port/dsh-memento/` 保留在仓库里备查（该 kit 的 `port.sh i
 
 ---
 
-## 七、设置页三项移植修复（2026-11-12 用户实机反馈）
+## 七、设置页三项移植修复（2026-11-12 用户实机反馈）+ 事故后的三项加固
 
 用户在手机上打开「喵记忆」设置页，报了三个问题：
 
@@ -182,38 +196,58 @@ kit 本体 `port/dsh-memento/` 保留在仓库里备查（该 kit 的 `port.sh i
 |---|---|---|---|
 | ① | 「反思/梦境换模型」等标签被挤成**竖排**（中文逐字换行） | `.meowmm_set_row` 是 flex 行，`.meowmm_set_ctrl{flex:none}` 内含 190px 输入框 + 徽标 + 按钮 ≈340px；窄屏（≈390px）下左侧 `.meowmm_set_rowtext` 只能分到约 40px。**上游代码里没有任何断点/响应式规则** | rowtext 加 `flex:1 1 200px`；ctrl 改 `flex:0 0 auto` + `flex-wrap`；新增 `@media (max-width:600px)`：行纵向堆叠、控件占满整行、输入框全宽 |
 | ② | 模型**只能手填字符串**，没得选、易填错 | `delegate.model` 字段类型是 `str`（纯文本框） | 新增字段类型 `model`，渲染 `<select>`；选项取自宿主 `ctx.remote.session.modelCatalog()`（按 provider 分组 `<optgroup>`）；**选项值统一拼成 `provider/model`**（宿主 `parseModelSpec` 按第一个 `/` 切成 `{provider, model}`，裸 id 会丢 provider 路由）；留空 = 用主模型；未知旧值保留不被静默清空；目录模块级缓存，加载失败安全回落空列表 |
-| ③ | 记忆保存目录**无法选择** | `projectDir` / `homeDir` 同为纯文本框 | 新增 `hostPickDirectory()`：主路径 `ctx.uiWorkspace.pickDirectory()`，兜底 `ctx.directoryPicker.pick()`；`projectDir` 与 `homeDir`（含自定义行）都挂「选择目录…」按钮；选择器不可用时给提示而不是静默 |
+| ③ | 记忆保存目录**无法选择** | `projectDir` / `homeDir` 同为纯文本框 | 新增 `hostPickDirectory()`（主路径 `ctx.uiWorkspace.pickDirectory()`，兜底 `ctx.directoryPicker.pick()`）；选择器不可用时给提示而不是静默 |
 
-改动只落在**客户端半边** `lib/client.js`（服务端 `lib/index.js` 未动）。
+### 事故后的三项加固（2026-11-12 全屋修复）
+
+上面的 ③ 把目录选择器**同时**挂到了 `projectDir` 和 `homeDir`，直接导致当天的事故：
+点一下「记忆目录」行的选择器就把绝对路径写进了本该相对的 `projectDir` ⇒ 记忆库漂移、
+24 条记忆失联。修复如下：
+
+| # | 改动 | 文件 | 作用 |
+|---|---|---|---|
+| ④ | `normalizeProjectDir()` 兜底 | `overlay/lib/index.js`（服务端半边，**新增**） | 绝对路径/盘符/UNC 一律回退 `.dsh-meow` 并报错；`validateConfigUserLayer` 只覆盖设置页写入链，拦不住 `cordis.patch.yml` 直写，这个兜底能 |
+| ⑤ | 选择器只挂 `homeDir` | `overlay/lib/client.js` | 去掉「记忆目录」行的一键选目录（误操作入口） |
+| ⑥ | `cmd_overlay` 遍历 `overlay/` | `port.sh` | 原来硬编码只铺 `client.js` ⇒ 新增的 `index.js` 兜底铺不上（纳管漏洞） |
+
+`verify.mjs` 的「port 补丁已铺」也改为**遍历 overlay/** 逐文件核对，同类漏洞不会再静默。
 
 ### 补丁与复现
 
 ```
 port/meow-memory/
-├── patches/01-settings-responsive-and-pickers.patch   上游 → 补丁后态（-p1 通用，8 hunks）
-├── patches/client.js.upstream                         上游原文（离线重建用）
-└── overlay/lib/client.js                              补丁后态（install 时铺这个）
+├── patches/01-settings-responsive-and-pickers.patch   上游 → 01 后态（-p1 通用，8 hunks）
+├── patches/02-projectdir-guard.patch                  index.js：加 normalizeProjectDir 兜底
+├── patches/03-picker-scope-homeDir-only.patch         client.js：选择器只挂 homeDir
+├── patches/client.js.upstream / index.js.upstream     上游原文（离线重建用）
+├── patches/client.js.patched01                        01 后态（03 的 baseline 证据）
+└── overlay/lib/{client.js,index.js}                   补丁后态（install/overlay 铺这两个）
 ```
 
-指纹链（`verify.mjs` 会逐字节核对第一段）：
+指纹链（`verify.mjs` 段 1 逐字节核对）：
 
 ```
-上游 client.js            1805a799931c670a
-  ├ 应用 01 补丁（8 hunks）→ c5ff126990867ded
-  ├ overlay/lib/client.js   c5ff126990867ded
-  └ 已装副本                c5ff126990867ded
+上游 client.js 1805a799931c670a
+  ├ 01 补丁（8 hunks）→ client.js.patched01  c5ff126990867ded
+  └ 03 补丁（收窄选择器）→ overlay/lib/client.js  917f0c22bafb62ae ← 已装副本
+
+上游 index.js  c1b99f9de90174f2
+  └ 02 补丁（加兜底）→ overlay/lib/index.js        d0cc1bf9c58c910f ← 已装副本
 ```
 
 复现：
 
 ```sh
-bash port.sh overlay                       # 幂等铺 overlay（install 也会自动铺）
-node tools/test-settings-ui.mjs            # 三项修复结构测试：23 项全通过
-node tools/verify.mjs --workspace <WS>     # 五段体检
+bash port.sh overlay                       # 幂等铺 overlay/ 全部文件（install 也会自动铺）
+node tools/test-settings-ui.mjs            # 结构测试：① ② ③ + ④（兜底）断
+node tools/verify.mjs --workspace <WS>     # 四段体检
+bash tools/protect.sh verify               # kit 自身指纹核对
 ```
 
-> ⚠️ `node_modules` 下的改动**不走 HMR**，改完要**重启应用**（或至少重载插件）才看得到。
-> `pnpm` 任何一次操作都会把 `lib/client.js` 还原成上游原文 ⇒ 记得重跑 `bash port.sh overlay`。
+> ⚠️ `node_modules` 下的改动**不走 HMR**，改完要**重启应用**（或至少重载插件）才看得到；
+> 而纯**配置**改动（`cordis.patch.yml`）用 `plugin_manager` disable→enable 就能当场生效。
+> ⚠️ `pnpm` 任何一次操作都会把 `lib/client.js`、`lib/index.js` 还原成上游原文
+> ⇒ 记得重跑 `bash port.sh overlay`。
 
 ### 本测试没覆盖什么
 
@@ -224,5 +258,8 @@ node tools/verify.mjs --workspace <WS>     # 五段体检
 
 ## 八、待办
 
-1. **重启应用后肉眼确认设置页**：标签不再竖排、模型变成下拉、目录行有「选择目录…」按钮。
+1. **重启应用后肉眼确认设置页**：① 标签不再竖排 ② 模型变成下拉 ③ 只有「全局数据目录」行有「选择目录…」按钮（「记忆目录」行**不再**有 —— 2026-11-12 事故后的收窄）。
 2. `promptLang: zh` 已写进 profile patch；重载/重启后落进运行态（重载前它以默认 zh 运行，行为无变化）。
+3. `lib/index.js` 的 `normalizeProjectDir()` 兜底要**重启**才进进程（ESM 模块缓存）；纯配置改动不受此限，`plugin_manager` disable→enable 即可当场生效。
+4. 记忆库现落在 `<workspace>/.dsh-meow`（sdcard 上）；`backup.enabled=true` 已开，dream 收尾会产出 `memory.db.bak`。**不要**用 projectDir 绝对路径挪库 —— 见 §四 ③。
+5. 若 `pnpm` 动过插件，重跑 `bash port.sh overlay` 并 `node tools/test-settings-ui.mjs` 复核（两处改动都在 overlay/ 里，会被 pnpm 还原）。
