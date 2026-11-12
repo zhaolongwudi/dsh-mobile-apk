@@ -111,6 +111,8 @@ cmd_install() {
 
   if v="$(installed_version)"; then c_ok "已装：$PKG@$v"; else c_bad "安装未生效"; return 1; fi
 
+  cmd_overlay
+
   if ! grep -q -- "- id: meow-memory" "$PROFILE_DIR/cordis.patch.yml" 2>/dev/null; then
     c_warn "配置段未写：请在 $PROFILE_DIR/cordis.patch.yml 末尾追加（config 是整体替换，键要给全）"
     printf '\n- id: meow-memory\n  config:\n    promptLang: zh\n'
@@ -118,6 +120,25 @@ cmd_install() {
   hdr "下一步"
   echo "  1) 重载插件或重启应用（node_modules 改动不走 HMR）"
   echo "  2) bash port/meow-memory/port.sh verify"
+}
+
+cmd_overlay() {
+  # 把 kit 的 overlay 铺到已装包上（幂等：先比 sha256，一致就不动）。
+  # 这是「移植补丁」的落点：设置页响应式 + 模型下拉 + 目录选择器。
+  local ov="$KIT_DIR/overlay/lib/client.js"
+  local dst="$PKG_DIR/lib/client.js"
+  if [ ! -f "$ov" ]; then c_warn "kit 无 overlay/lib/client.js，跳过"; return 0; fi
+  if [ ! -f "$dst" ]; then c_bad "未装包，先 install"; return 1; fi
+  local want got
+  want=$(sha256sum "$ov" | cut -d' ' -f1)
+  got=$(sha256sum "$dst" | cut -d' ' -f1)
+  if [ "$want" = "$got" ]; then
+    c_ok "overlay 已就位（client.js ${want:0:16}…）"
+  else
+    cp -av "$dst" "$DSH_HOME/port-backup/meow-client-upstream-$(date +%Y%m%d-%H%M%S).js" >/dev/null 2>&1 || true
+    cp -f "$ov" "$dst"
+    c_ok "overlay 已铺（client.js → ${want:0:16}…）"
+  fi
 }
 
 cmd_verify() {
@@ -150,8 +171,9 @@ cmd_uninstall() {
 
 case "${1:-}" in
   install)   shift; cmd_install "$@" ;;
+  overlay)   cmd_overlay ;;
   verify)    shift; cmd_verify "$@" ;;
   status)    cmd_status ;;
   uninstall) shift; cmd_uninstall "$@" ;;
-  *) sed -n '2,10p' "$0"; exit 1 ;;
+  *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

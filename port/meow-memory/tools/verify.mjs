@@ -17,7 +17,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+
+const KIT_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 // .mjs 里用 CJS 的 require 取 node:sqlite（保持与插件相同的加载方式）
 const require = createRequire(import.meta.url);
@@ -43,7 +45,8 @@ const STORE = path.join(WORKSPACE, '.dsh-meow', 'memory.db');
 const LAYERS = ['soul', 'user', 'project', 'fact', 'lesson', 'topic', 'rules'];
 const EXPECT_SHA16 = {
   'lib/index.js': 'c1b99f9de90174f2',
-  'lib/client.js': '1805a799931c670a',
+  // client.js 是 port 补丁后态（设置页响应式 + 模型下拉 + 目录选择器），不是上游原文
+  'lib/client.js': 'cde5f50835223b47',
   'cordis.patch.yml': 'd725feec27202e78',
 };
 
@@ -83,6 +86,18 @@ function section1() {
   record('①包', '声明 engines.dsh（对照 dsh-memento）', !!eng.dsh, eng.dsh ? eng.dsh : '无声明 → 宿主版本闸门不校验（已知差异）', 'warn');
   record('①包', '零运行时依赖', Object.keys(pj.dependencies || {}).length === 0, JSON.stringify(pj.dependencies || {}));
   record('①包', '声明 dsh.bundle.patch', !!pj.dsh?.bundle?.patch, JSON.stringify(pj.dsh || {}));
+
+  // 逐字节核对：已装 client.js 必须 == kit 的 overlay（即 port 补丁真的铺上了）
+  const overlayPath = path.join(KIT_DIR, 'overlay', 'lib', 'client.js');
+  const installedPath = path.join(PKG_DIR, 'lib', 'client.js');
+  if (fs.existsSync(overlayPath) && fs.existsSync(installedPath)) {
+    const h = (p) => execFileSync('sha256sum', [p], { encoding: 'utf8' }).slice(0, 16);
+    const want = h(overlayPath);
+    const got = h(installedPath);
+    record('①包', 'port 补丁已铺（client.js == overlay）', want === got, want === got ? want : `want ${want} got ${got}`);
+  } else {
+    record('①包', 'kit 提供 overlay/lib/client.js', fs.existsSync(overlayPath), '缺 overlay，无法核对 port 补丁', 'warn');
+  }
 }
 
 /* ── 段 2：装配声明 ─────────────────────────────────────────── */

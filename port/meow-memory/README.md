@@ -20,6 +20,7 @@
 | 运行时依赖 | **零**（`dependencies` 为空） |
 | 原生产物 | **零**（全包无 `.node/.so/.wasm`，纯 JS + `node:sqlite`） |
 | 记忆语言 | profile patch pin `promptLang: zh` |
+| 客户端产物 | **上游 + port 补丁**（设置页响应式 / 模型下拉 / 目录选择器） |
 
 ---
 
@@ -173,9 +174,55 @@ kit 本体 `port/dsh-memento/` 保留在仓库里备查（该 kit 的 `port.sh i
 
 ---
 
-## 七、待办
+## 七、设置页三项移植修复（2026-11-12 用户实机反馈）
 
-1. **肉眼确认设置页**：dsh 设置页里应出现 meow-memory 段（本轮已从代码层证明走 `configForms` 兜底，
-   但没截到 UI 图）。若看不到，回看第三节的兜底分支与 `SETTINGS_NS` 是否等于 entry id。
-2. 配置改动后重载插件/重启应用，使 `promptLang: zh` 落进运行态（在重载前它本来就以 zh 默认值运行，
-   所以行为无变化）。
+用户在手机上打开「喵记忆」设置页，报了三个问题：
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| ① | 「反思/梦境换模型」等标签被挤成**竖排**（中文逐字换行） | `.meowmm_set_row` 是 flex 行，`.meowmm_set_ctrl{flex:none}` 内含 190px 输入框 + 徽标 + 按钮 ≈340px；窄屏（≈390px）下左侧 `.meowmm_set_rowtext` 只能分到约 40px。**上游代码里没有任何断点/响应式规则** | rowtext 加 `flex:1 1 200px`；ctrl 改 `flex:0 0 auto` + `flex-wrap`；新增 `@media (max-width:600px)`：行纵向堆叠、控件占满整行、输入框全宽 |
+| ② | 模型**只能手填字符串**，没得选、易填错 | `delegate.model` 字段类型是 `str`（纯文本框） | 新增字段类型 `model`，渲染 `<select>`；选项取自宿主 `ctx.remote.session.modelCatalog()`（按 provider 分组 `<optgroup>`）；留空 = 用主模型；未知旧值保留不被静默清空；目录模块级缓存，加载失败安全回落空列表 |
+| ③ | 记忆保存目录**无法选择** | `projectDir` / `homeDir` 同为纯文本框 | 新增 `hostPickDirectory()`：主路径 `ctx.uiWorkspace.pickDirectory()`，兜底 `ctx.directoryPicker.pick()`；`projectDir` 与 `homeDir`（含自定义行）都挂「选择目录…」按钮；选择器不可用时给提示而不是静默 |
+
+改动只落在**客户端半边** `lib/client.js`（服务端 `lib/index.js` 未动）。
+
+### 补丁与复现
+
+```
+port/meow-memory/
+├── patches/01-settings-responsive-and-pickers.patch   上游 → 补丁后态（-p1 通用，8 hunks）
+├── patches/client.js.upstream                         上游原文（离线重建用）
+└── overlay/lib/client.js                              补丁后态（install 时铺这个）
+```
+
+指纹链（`verify.mjs` 会逐字节核对第一段）：
+
+```
+上游 client.js            1805a799931c670a
+  ├ 应用 01 补丁（8 hunks）→ cde5f50835223b47
+  ├ overlay/lib/client.js   cde5f50835223b47
+  └ 已装副本                cde5f50835223b47
+```
+
+复现：
+
+```sh
+bash port.sh overlay                       # 幂等铺 overlay（install 也会自动铺）
+node tools/test-settings-ui.mjs            # 三项修复结构测试：23 项全通过
+node tools/verify.mjs --workspace <WS>     # 五段体检
+```
+
+> ⚠️ `node_modules` 下的改动**不走 HMR**，改完要**重启应用**（或至少重载插件）才看得到。
+> `pnpm` 任何一次操作都会把 `lib/client.js` 还原成上游原文 ⇒ 记得重跑 `bash port.sh overlay`。
+
+### 本测试没覆盖什么
+
+`test-settings-ui.mjs` 是**结构断言**（语法可编译 + 三条代码路径在位 + 旧的塌陷写法已移除），
+不是像素级渲染测试。真机观感仍需肉眼确认一次。
+
+---
+
+## 八、待办
+
+1. **重启应用后肉眼确认设置页**：标签不再竖排、模型变成下拉、目录行有「选择目录…」按钮。
+2. `promptLang: zh` 已写进 profile patch；重载/重启后落进运行态（重载前它以默认 zh 运行，行为无变化）。

@@ -32,9 +32,25 @@
     "bytes": 1669699,
     "sha256_16": {
       "lib/index.js": "c1b99f9de90174f2",
-      "lib/client.js": "1805a799931c670a",
+      "lib/client.js": "cde5f50835223b47",
       "cordis.patch.yml": "d725feec27202e78",
       "package.json": "8a4611e90f54fdd2"
+    }
+  },
+  "portPatches": {
+    "01-settings-responsive-and-pickers.patch": {
+      "target": "lib/client.js",
+      "hunks": 8,
+      "upstreamSha256_16": "1805a799931c670a",
+      "patchedSha256_16": "cde5f50835223b47",
+      "overlay": "overlay/lib/client.js",
+      "upstreamCopy": "patches/client.js.upstream",
+      "fixes": [
+        "① 窄屏布局塌陷：标签被挤成竖排（新增 @media max-width:600px + rowtext/ctrl flex 基准）",
+        "② 模型只能手填：delegate.model 由 str 改 model 类型，渲染 <select>，选项来自 ctx.remote.session.modelCatalog()",
+        "③ 记忆目录无法选择：新增 hostPickDirectory()，走 ctx.uiWorkspace.pickDirectory()（兜底 ctx.directoryPicker.pick()）"
+      ],
+      "test": "tools/test-settings-ui.mjs（23 项结构断言）"
     }
   },
   "config": {
