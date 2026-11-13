@@ -136,12 +136,19 @@ else
   else
     git add port/
     git commit -q -m "port: 自动落地升版（$(date +%Y-%m-%d)）" || say "（无内容可提交）"
+    # 本机 git push 常年 SSL 失败（smart-http 不稳，实测 unexpected eof），
+    # 首选 Git Data API 通道；两条都不通才判失败。
     ok=0
-    for i in 1 2 3; do
-      if timeout 110 git push origin HEAD:main 2>&1 | tail -2; then ok=1; break; fi
-      say "  推送失败，重试 $i/3"; sleep 10
-    done
-    if [ "$ok" = "1" ]; then say "✔ 已推送到远端 main"; else say "✘ 推送失败（本机已装好；远端记录待补，可重跑 --no-push 之外的方式重推）"; RC=1; fi
+    if timeout 300 "${NODE:-node}" port/tools/api-push.mjs -m "port: 自动落地升版（$(date +%Y-%m-%d)）"; then
+      ok=1
+    else
+      say "  API 通道失败，回退 git push 重试"
+      for i in 1 2 3; do
+        if timeout 110 git push origin HEAD:main 2>&1 | tail -2; then ok=1; break; fi
+        say "  推送失败，重试 $i/3"; sleep 10
+      done
+    fi
+    if [ "$ok" = "1" ]; then say "✔ 已同步到远端 main"; else say "✘ 推送失败（本机已装好；远端记录待补）"; RC=1; fi
   fi
 fi
 
