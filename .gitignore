@@ -56,3 +56,13 @@ D:/
 # （字节 EF 80 BA），所以字面量 `D:/` 匹配不到它。存量已于 2026-10-28 清理。
 **/.npm-cache/
 .git-msg-*.txt
+
+# ---- 移植 kit 的本地载荷与临时产物（2026-11-13 收口）----
+# kit 的约定是「仓库只背脚本与 manifest，不背二进制」（每个 kit 的 README 都写了）。
+# 这些是 port.sh sync / fetch-payload.sh 在本机现取的产物：payload/ 展开目录、
+# payload.tar.gz 打包件、.sync/ 下载暂存、pkg/ 离线包。不忽略的后果：任何一次
+# `git add -A` 都会把数 MB 二进制提交进库（dsh-purge 一次就 6.9 MB）。
+port/*/payload/
+port/*/payload.tar.gz
+port/*/.sync/
+port/*/pkg/

@@ -521,6 +521,10 @@ cmd_sync() {
     [ "$got" = "$sha" ] || die "SHA-256 校验失败（期望 $sha，实得 $got）"
     say "SHA-256 校验通过"
   fi
+  # 全新 / 无载荷状态下 payload/node_modules 还不存在，而 mv **不会**自动建中间目录：
+  # 2026-11-13 实测，这一行让「自动升版」在干净状态必然失败
+  # （mv: cannot move ... to .../payload/node_modules/dsh-purge-community: No such file or directory）。
+  mkdir -p "$SELF/payload/node_modules"
   rm -rf "$SELF/payload/node_modules/$PKG"
   tar xzf "$tmp/plugin.tgz" -C "$tmp" || die "解包失败"
   mv "$tmp/package" "$SELF/payload/node_modules/$PKG" || die "无法替换载荷目录"
@@ -529,6 +533,13 @@ cmd_sync() {
   if [ -f "$SELF/tools/patch-android-exec.mjs" ]; then
     "$NODE" "$SELF/tools/patch-android-exec.mjs" "$SELF/payload/node_modules/$PKG" --node "$NODE" || \
       die "Android 执行器补丁未打上（载荷里的 spawn 锚点变了？看 tools/patch-android-exec.mjs 的锚点表）"
+  fi
+  # 补齐 bundledDependencies（与 fetch-payload.sh 同口径）。sync 只解了插件本体，
+  # 载荷里若少了依赖，重打包出的 payload.tar.gz 与「fetch-payload.sh --pack」不一致，
+  # 换机时 install 会因为缺 yaml 装不起来。此刻插件目录已在场，fetch-payload.sh 会
+  # 跳过它、只补缺的那些依赖；依赖已存在则直接 skip（幂等）。
+  if [ -f "$SELF/fetch-payload.sh" ]; then
+    bash "$SELF/fetch-payload.sh" >&2 || say "  ! 依赖补齐失败（网络？）：载荷可能缺 bundledDependencies，换机前请重跑"
   fi
   "$NODE" "$SELF/tools/pack-payload.mjs" > "$tmp/pack.json" || die "重打包失败"
   cat "$tmp/pack.json"

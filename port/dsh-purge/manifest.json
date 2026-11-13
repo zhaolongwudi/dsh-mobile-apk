@@ -3,8 +3,8 @@
   "purpose": "把 dsh-purge Community（破甲插件）移植进 dsh-mobile-apk（com.dsharnessmobile.shell）的 web profile，并在每日新构建物覆盖安装后仍在位；宿主补丁在每次快照刷新后可一键重打",
   "package": {
     "name": "dsh-purge-community",
-    "version": "1.6.88",
-    "source": "https://github.com/kingcharleslzy-ai/dsh-purge/releases/download/v1.6.88/dsh-purge-community-1.6.88.tgz"
+    "version": "1.6.97",
+    "source": "https://github.com/kingcharleslzy-ai/dsh-purge/releases/download/v1.6.97/dsh-purge-community-1.6.97.tgz"
   },
   "bundledDependencies": {
     "yaml": "2.9.1"
@@ -15,9 +15,9 @@
   "runtime": "dsh 0.2.2-rc.1（随 APK 快照）；宿主 @deepseek-ai 目录 = files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai",
   "payload": {
     "file": "payload.tar.gz",
-    "sha256": "5421337b090bc038c5c1d6591cacfc94df30f2b44dc1bfff0ee075cb0bfb0303",
-    "bytes": 2223470,
-    "entries": 557,
+    "sha256": "7a7e4fd7b9314eaa744c3c4655198798717efd50f5b9d0d99701fcef678aeb14",
+    "bytes": 2242818,
+    "entries": 573,
     "layout": "node_modules/（dsh-purge-community + yaml，纯 JS，无原生绑定、无符号链接）"
   },
   "mount": {
@@ -66,6 +66,6 @@
     "$DSH_HOME/prompt-inject.md"
   ],
   "hostPatchFootprint": "$FILES/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/<pkg>/lib/*.js 与若干 cordis.patch.yml（写入前自动备份；revert 可还原）",
-  "verifiedAt": "2026-11-11T16:20+08:00",
+  "verifiedAt": "2026-11-13T06:00:14.793Z",
   "verifiedHow": "2026-11-11 上游同步到 1.6.88（release tgz sha256 4a557104… 校验通过；lib/patches/ 与 1.6.86 逐字节相同 → 补丁表未变、锚点面未搬）→ 载荷重打包 entries=557/sha256 5421337b… → 干净落位（安装集与发布物逐文件一致 324/324，清掉 177 个 dev 件）→ port.sh verify 六段全绿（文件/装配/模块可加载/Android 执行器补丁/permission 固定/引擎 fiber）→ selfcheck state=ok ok=true applied=71/72 na=9 skipped=3 off=0 missing_file=0 level=qualified，宿主 24/25 层 ok（layout 层 Web 宿主预期 na）→ reanchor drifted=2，均为 optional（#54/#76）→ 执行器补丁正控 rc=0 / 负控 rc=1"
 }
