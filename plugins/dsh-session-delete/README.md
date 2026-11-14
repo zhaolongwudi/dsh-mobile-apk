@@ -12,15 +12,20 @@
   - **幂等**：只有带 `error: 'not-found'` 的 404 才算「已删」；宿主插件没加载时的 404 会正常报错。
   - **不做导航**：不碰 `clearMain` 这类 private 接口，也不点 DOM。
 - **src/index.js**（host）：注册三个路由（日志走 stdout 的 `[dsh-session-delete]` 前缀——
-  `ctx.logger.info` 在 Android 壳里不落 `engine.log`，实测不可见）
+  `ctx.logger.info` 在 Android 壳里不落 `engine.log`，实测不可见）。
+  三条注册一律走 `ctx.effect(() => ctx.webServer.register({...}))`（issue #1595）：
+  `register` 返回 disposer 且同名 `(kind,path)` 重复注册会 throw，而 WebServer 不按 fiber
+  回收路由；裸调 + 丢 disposer ⇒ 一次 HMR 重载或设置页「禁用→启用」之后，新实例抛
+  `duplicate exact route`，整个插件装载失败，旧 handler 还在用已 dispose 的 ctx 回 200
+  （回归用例：`test/host-routes.test.mjs` 的 #1595 一条，按 HMR 时序跑 apply → dispose → apply）
   - `POST /api/session-delete`：`connection.requestRejection(req)` 同源鉴权；只接受 `session-<uuid>`；
     请求体上限 4 KB；
   - 只有两条拒绝（409）：
     - `workspace/session-activity` 瀑布报告有活动 → `session-active`；
     - **探测状态未知**（provider 抛错 / 返回非数组 / 老引擎没有瀑布）→ `activity-unknown`，
       绝不把「不知道」当「空闲」；
-  - **加载中的会话照常可删**：顺序是「定位目录 → 清归档/置顶 → 卸载内存会话 → 改名 → 删目录」。
-    卸载放在目录确认存在之后：目录不存在 / 不唯一 / 清理失败都发生在卸载之前，避免
+  - **加载中的会话照常可删**：顺序是「定位目录与隔离副本 → 改名 → 卸载内存会话 → 清归档/置顶 → 删目录」。
+    卸载放在目录移出扫描路径之后：目录不存在 / 不唯一 / 移动失败都发生在卸载之前，避免
     「报错但会话已经从内存消失、文件还在」。
     卸载走引擎自己的 teardown 边 `entry.detach()`（**维护者在 PR #496 里接受了插件内驱动这条边，
     不额外加引擎补丁**；上游若改名或改语义，插件会以 `unload-failed` 明确失败、文件不动）：移除 store 条目并派发 `session/disposed`，
@@ -32,8 +37,17 @@
   - `POST /api/session-delete-trace`：客户端决策回传（写 engine.log，便于现场取证）。
   - `GET /api/session-delete-version`：构建戳，供页面自更新。
 - **src/session-delete.js**：可单测的删除核心——定位 `<DSH_HOME>/sessions/<cwd-key>/<id>/`，
-  命中 0 个报 `not-found`、命中 2 个报 `ambiguous`（一个都不删），先 `rename` 成 `.deleting-<t>`
-  再递归删除，避免并发扫描看到删到一半的目录。
+  存储目录命中 2 个报 `ambiguous`（一个都不删）。永久删除同时清除该 id 的所有 `.corrupt/<id>.<时间戳>`
+  隔离副本；只有存储与隔离都不存在才报 `not-found`。枚举失败如实报错，不能成为客户端视为成功的 404。
+  每个目录先 `rename` 成 `.deleting-<t>` 再递归删除；失败报告残留，重试可继续清理。
+  启动 sweep 同时清理隔离区内明确删除产生的 graveyard，不自动过期清理可恢复的隔离件。
+  **删除进行到一半的墓地目录也是删除目标**（issue #1587 第二条残留面）：`rm` 失败/进程被杀后
+  目录停在 `<id>.deleting-*`，它既不在扫描路径上也不在隔离区 —— 旧实现只报 `not-found`，
+  客户端按「已删除」收尾，重试永远清不掉。现在 `deleteStoredSession` 把
+  `findGraveyardDirs()` 的命中一起删；隔离入口遇到只剩墓地目录时报 `deletion-incomplete`
+  （409，带 paths），客户端渲染「再点一次删除即可收尾」，不再冒充已删除、也不假装可恢复。
+  隔离件本身**不自动过期**（可恢复承诺），但 `inspectQuarantine()` 在启动时把条数与字节数
+  记进 `engine.log`，让「.corrupt/ 吃掉多少」可查。
 
 ## 构建与安装
 

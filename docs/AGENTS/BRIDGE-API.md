@@ -28,7 +28,7 @@ The native console callback `window.__consoleInsets(top, bottom, ime)` uses CSS 
 
 ### 2.1 Root状态、维护与结果
 
-rootGrantState返回有效AI授权（raw switch且当前versionCode consent），rootAccessState仅读应用su状态，不触发弹窗。requestRootAccess显式发起有界真实UID检测，不保证管理器弹窗；setRootConsent(false)同时关开关。root Shizuku与显式su授权为替代路径，uid2000不是root。repairRootOwnership立即返回repair-started/repair-running，rootGrantState().ownership轮询结果。
+rootGrantState返回有效AI授权（raw switch且同意覆盖当前免责声明内容版本 DISCLAIMER_REVISION），rootAccessState仅读应用su状态，不触发弹窗。APK 升级本身不使同意失效；旧 consentVersionCode 只用于迁移。requestRootAccess显式发起有界真实UID检测，不保证管理器弹窗；setRootConsent(false)同时关开关。root Shizuku与显式su授权为替代路径，uid2000不是root。repairRootOwnership立即返回repair-started/repair-running，rootGrantState().ownership轮询结果。
 
 ownership包含running/overdue/startedAt/completedAt/elapsedMs/operation/result?/lease?；当前耐久lease未finish即保持pending、completedAt=0，旧result不能覆盖当前UNKNOWN。UID0派发前耐久commit，完整回执才finish；部分已确认helper信封可结算但不报修复成功。timeout/drain/read/cleanup/Binder未知阻止新派发/维护/启动，不fallback重放；同boot应用重启或resetShizuku不清lease，只有同epoch方案真boot变化可解除。详见 [Root维护契约](<dsh-mobile-apk/docs/AGENTS/ROOT-MAINTENANCE.md>)。
 
@@ -63,6 +63,17 @@ tier-2（`isolationTier=process-suffix`）把浏览器视图放在 `:browser` �
 | `forwardMotion` | **`oneway void`**（`tabId, action, downTime, eventTime, x, y, pressure, size, metaState`） | 每帧触摸路径。oneway 的代价是**返回值语义丢失**：主进程触摸回调恒按「已消费」处理（一次 MOVE 回 false 会被系统当成手势结束，后续 MOVE 直接不再派发），投递结果不计入任何 UI 线程。合帧在渲染侧 `MotionCoalescer`：DOWN/UP/CANCEL 保序保留、连续 MOVE 只留最后一条、队列上限 64 且溢出优先丢最老的 MOVE。改前是同步 `boolean` + 渲染侧 `FutureTask.get(10s)`，一次滑动 20 余次同步 Binder 往返，渲染主线程忙时把主进程主线程一起挂住（issue #540）。 |
 | `dispatchTap` / `dispatchKey` | 保持 `boolean`（同步） | 一次性工具调用，返回值要如实报给模型，且不在每帧触摸路径上，因此不走 oneway。 |
 | 其余（`start`/`ensureTab`/`loadUrl`/`relayout`/`evaluateJs`/`capture`/`tabState`/`tabIds`/`flushCookies`/`clearBrowsingData`） | 同步回执 | 调用方需要「做了没有」的真实结算，选型理由同上。 |
+
+### 2.5 悬浮入口形态设置与页面历史合同（2026-11-13续工）
+
+| 方法 | 当前签名与返回 | 边界 |
+|---|---|---|
+| getOverlayEntryStyle | `getOverlayEntryStyle(): String`，ball或strip，默认ball | trusted顶层引擎页专用；返回偏好，不证明浮窗在场 |
+| setOverlayEntryStyle | `setOverlayEntryStyle(style: String): String`，返回写后读回值 | 只接受精确ball/strip，非法值不写；复用overlay_display.entry_style，UI变更marshal主线程通知v2；不启用overlay、不改变entry_ui_v2默认false、不触碰旧启用开关 |
+
+[AndroidBridge](<app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt>)→[MainActivity](<app/src/main/java/com/dsharnessmobile/shell/MainActivity.kt>)→[OverlayV2.onEntryStyleChanged](<app/src/main/java/com/dsharnessmobile/shell/OverlayV2.kt>)；[DevSection](<dsh-client-ui-responsive/src/client/dev-section/DevSection.tsx>)在原浮动入口开关旁提供中英双语选择，getter/setter缺失、畸形值、拒写不乐观置位。顶部卡片不再提供X/形态/隐藏按钮；手势与设置同源偏好，不是第二套入口。picker租约期间不重建入口，延后配置收敛需单独验证。
+
+页面历史不是新增JavascriptInterface：原受控OverlayPageHost.state读取公开SessionBinding.eventSource，transcript合同为role=user/assistant/tool，工具字段toolName/arguments/result/state及truncated；字段与全JSON UTF8共享上限、真实配对和安全渲染唯一细节见[设计§5.5](<docs/overlay-refactor-2026-11/design.md>)。debug UI快照仅既有debuggable诊断面，不注册模型工具、不作为可信业务输入。新增桥必须跑对称门禁，源码/静态绿不替代设备验收；**CURRENT VERIFICATION PENDING**。
 
 ## 3. 历史增量（不作为当前构建或验收证据）
 

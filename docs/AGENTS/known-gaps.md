@@ -3,6 +3,23 @@
 > 更新：2026-10-07。目标 0.14.5；0.14.4 是旧包与反馈基线。源码有改动不等于新包已验收。
 > 当前自主开发与模拟器验收已获用户授权；远程推送、PR、合并和发版仍需最终授权。历史版本的“外测由别人做”不适用于本轮。
 
+## 悬浮交互 Phase 2（2026-11-13续工，CURRENT VERIFICATION PENDING）
+
+本节区分“已读到源码”与“通过验收”，不豁免最新需求；[用户基线](<docs/overlay-refactor-2026-11/user-baseline.md>)高于[历史交接](<docs/overlay-refactor-2026-11/handoff-phase2.md>)。当前实施见[续工交接](<docs/overlay-refactor-2026-11/handoff-phase2-continued.md>)；历史证据保留，最新结果仅由lead的[测试报告](<docs/overlay-refactor-2026-11/test-report-phase2.md>)维护。不得从单测/编译/安装推出L3三层通过。
+
+| 项 | 当前源码事实 | 未验收边界 |
+|---|---|---|
+| 独立sheet/浮动输入 | DRAWER覆盖COMPOSER不避让；workspace/session各自稳定root/有界WM窗，无fullwidth pillRow；API33主根可见surface union按layout/scroll更新，非逐帧；普通空白只收底部 | 屏幕几何不变时sheet前后composer frame一致、chips随IME、下层透传/两向任务待验；API26–32主根answer/attachments等额外透明间隙未由API33 helper解决，不能称全API无隐形热区 |
+| picker同View原稿 | 原flags/alpha交互租约，让系统焦点触摸且降低opacity；不hide/remove/show或setText；空sid拒绝取件不隐式create，outside早返回、picker配置只禁重建，旋转可同View安全reflow | 失败回滚/同View恢复/精确request/迟到与取消/三类picker/相机遮挡需当前反证与设备；借用期间style/visual-config可能待后续生命周期收敛，不能称已修或无风险 |
+| 历史/Markdown/工具 | 公开eventSource投影user/assistant/tool，工具按真实call身份配对；40行/字段/完整UTF8 JSON预算、Kotlin复验，native spans安全渲染assistant；user/tool literal、稳定row/滚动锚；顶部多余按钮已移除 | 真实idle/流式/重开/切sid/并发工具与长内容、恶意内容惰性显示、滚动锚不抢底需三层；不是完整历史无限加载器 |
+| motion/长胶囊/边滑 | OverlayMotion距离纯数学+provisional配置；card固定root跟手绘制，终态交接长pill；顶缘宽容fade/不足回弹联动收底部；对称球到边arm/继续侧滑收条/内拉复球，设置桥同偏好 | 连贯性/慢拖停顿/CANCEL/单DOWN推顶/双侧触区/系统手势冲突/动态关动画须设备；不再以旧16dp/500dp/s或新DOWN判据冒充当前验收；参数未获产品确认 |
+| 视觉重叠/现代Region与旧fallback | 旧双文字由MorphVisual分阶段修；实色面后设备仍透Gallery，lead确证WMS把NOT_TOUCHABLE alpha1请求强制cap至.80。当前API33 Card真实圆角Region成功则不加NOT_TOUCHABLE，false才fallback；sheet cover最小高度+40%上限防半截chips，picker.15独立不变 | 新代码待当前包前后图，不把前次“alpha1已好”或SCOPED_PASS当通过。API26–32/region失败fallback的系统cap/透底限制未解决；现代Region变化触发框架内部traversal、性能待测；composer Region空隙与跨UID触摸仍须实际反证 |
+| 设置形态桥 | trusted get/setOverlayEntryStyle复用entry_style，精确ball/strip，非法不写、写后读回；中英设置项邻原开关，不启用v2 | getter/setter对称性及拒写反证要保持；设置前后台/取件期间改变、无桥兼容与真实应用结果需验 |
+| 事务/F19/回滚 | cachedV2 UI-only suspend/resume保业务；type/rpcId+literal ok/accepted，UNKNOWN只读原request正证不重发；答案与message草稿隔离、完整form/审批二步保留 | 旧测试数字按原输入历史保留，不自动覆盖最新包；create未知/发送未知不能重复创建/发送，跨层恢复要当前证据 |
+| 附件/命令/状态 | 无RAF serialize→exact Session.prompt固定UUID，draft-ready只草稿成功；官方menu ready/hit/rev/generation守卫、handedOff非handler完成；watchState按card/pill/composer可见订阅，真实缩略图有界 | 三取件/附件真实送达/UNKNOWN恢复/拒绝引用恢复、目录及workspace真值/退订仍需验，不以carrier ok=false当业务拒绝或HTTP200当受理 |
+| 前台/光环/旧兼容 | 应用级resumed集合排除透明代理；v2未建光环，旧回滚保留；旧召回与作答面另由服务持有 | Main/Console/Repair切换/前后台恢复/服务不间断、细条触区/旧召回兼容未有当前完整证据；光环缺席不能当授权删除 |
+| debug与最终产物/性能 | 只读debug快照有View身份/flags/alpha、节点bounds/草稿选区/refs用于前后比对；无发布候选 | 最新APK装机与两向三层、帧时/CPU/PSS/长稳、低API/字号/导航/关动画、同源双ABI和arm64补验均由lead取证；快照初始化不等于最新APK已装，不称功能/性能完成 |
+
 ## 当前入口
 
 - 协调仓 `docs/REFACTOR-2026-10-05.md` 是本轮唯一活动计划、Issue Ledger 与事实账；子仓地图从 [AGENTS.md](../../AGENTS.md) 进入。
@@ -20,7 +37,7 @@
 | MiMo 与配置保留 | 旧基线真实 wire on/off 成功；虚拟屏目标达成但旧任务 13 次工具调用超出事先 10 次限制，整例未通过 | 新正式包自主任务预先约定可行预算并按真实事件计数；保留既有配置/会话/凭据 |
 | UI / 范围 / 通知 / 浏览器 | 有旧版和阶段证据；最终当前树尚未完成三层回归 | 两个模拟器横竖屏、透明度、拒绝面、文件选择、后台任务和旧会话均按同一产物复验 |
 | 真机 | MuMu x86_64 是开发首验；arm64 真机是发布前补充 | 华为 WebView identity/安装反馈不能以模拟器替代真机证据 |
-| CI 面两个已死 workflow 条目 | `Snapshot Build`（本地已 `git rm`，未推送）与 `ADB runtime patch`（其分支 `contrib/adb-runtime-patch` 已不存在）仍出现在 Actions 列表，均已 `gh workflow disable`；REST 无删除 workflow 的接口 | push 后 `Snapshot Build` 自动消失；`ADB runtime patch` 需在默认分支上不存在该文件，当前仅能保持 disabled |
+| CI 面已死 workflow 条目 | ~~`Snapshot Build`~~ **已消失**（2026-11-15 核对：`gh workflow list --all` 不再列出，`.github/workflows/snapshot-build.yml` 亦不在树内）。`ADB runtime patch` 仍在列表中，状态 `disabled_manually`——其分支 `contrib/adb-runtime-patch` 已不存在，REST 无删除 workflow 的接口 | `ADB runtime patch` 只有在默认分支上不存在该 workflow 文件时才会消失；当前只能保持 disabled。这不是缺陷，属 GitHub 侧的无删除接口限制 |
 | APK 更新兜底的例外：`runUpdate` 无超时兜底 | 0.14.6 新增的 APK 更新路径（`ApkUpdateController`）有完整兜底（`armWatchdog`/`disarmWatchdog`/`onTimeout`/`timeoutReason`/`release`）；**但快照联调路径 `runUpdate`（`EngineStartFlow.kt:1143`）没有任何定时器**，回执守卫在 `:1150`，代次作废即静默丢弃回执、不落终态 | 已裁定**本轮不修**（三条理由：① 旧入口 `MainActivity` 的 `ACTION_UPDATE` 已随 **#682 收口移除**（exported launcher 上 manifest 未声明并不挡显式组件 intent，「adb-only、普通用户不可达」的理由当时不成立）——`runUpdate` 当前**无任何调用点**（定义保留，重新接线前不会暴露）；② 默认配置 `DEFAULT_MANIFEST_URL` 为空 ⇒ `UpdateManager` 立刻回 `NotConfigured` ⇒ 实际快速收敛、暴露不到；③ 本轮已为「下载 APK 更新」重新出包，再动 liveness 路径的回归风险不抵收益）。**如实登记的结论**：与用户报的「更新转圈不收敛」**同机制**，但**非用户可达**；若将来有人用 `overrideManifestUrl` 打开联调且下载卡住，才会以同形暴露 |
 | 应用内更新的真实性防线只到「证书连续性」 | #675 的 `UpdateChecker.signerContinuityHolds` 把待装 APK 的证书与**设备上已安装**的本应用证书比对，挡的是「换成异证书的包」。它**挡不住**「用随仓公开的 `keystore/debug.keystore` 重签出同证书的包」——密钥随仓公开是**既定选择**（开源、不上 Google Play、keystore 不修改/不轮换），所以同证书包在安装器与本校验面前都是合法形态 | 已裁定**接受**：本仓不再引入第二把发布密钥，也不改签名配置。剩余风险只由「官方发布面」承担——摘要必须来自官方 Releases/PAGES 元数据（#728 起没有有效 SHA-256 就不产生可安装更新）。发版候选前补三层验收时要覆盖「异证书包被拒」这一条；同证书重签形态属接受项，不再追 |
 | `check-code-map.mjs` 锚点只验行号存在性、不验语义 | 锚点判定只校验「行号 ∈ [1, 文件行数]」（`scripts/check-code-map.mjs:235-242`），**不校验该行内容是否仍是文档声称的符号**。源码前移后地图会**静默漂移**而门禁仍 `exit 0`。实测（2026-10-11，只读探针）：1633 个锚点中带可提取预期符号者 **667 个（40.8%）**，可判读的 495 个里约 **53%（263 个）已漂移**；手工抽查 4 例 **4/4 真漂移** —— `AndroidBridge.kt` 的 `jsString` 文档写 `:423`（现 `:675`）、`BrowserHost.kt` 的 `onMain` 写 `:187`（现 `:386`）、`UpdateManager.kt:69` 写 `renameTo`（该行现为 `IllegalStateException`）、`SnapshotFs.kt:83` 写 `move`（现 `:74`） | 已裁定**本轮不改门禁**（两条理由：① 它是发布链门禁，改它需自证，而本轮已多次代码改动 + 第三次出包，风险叠加；② **未调参就启用比不加更坏** —— 会训练人忽略门禁）。**建议实现方向**：① 文档侧先给锚点补预期符号（纯文档、零门禁风险），把可校验覆盖率从 40.8% 往上提；② 门禁侧再加「`line ± WINDOW` 内出现预期符号」的校验 + **反例自检**（「符号移走能被发现」与「符号在窗口内不得判红」），WINDOW 按基线调参至误报为 0 再启用。**注意**：朴素窗口校验误报率高（59.2% 的锚点提取不到预期符号；裸文件名锚点如 `MainActivity.kt:815` 按仓内约定相对 `app/src/main/java/com/dsharnessmobile/shell/`），**不要在未调参时直接启用** |

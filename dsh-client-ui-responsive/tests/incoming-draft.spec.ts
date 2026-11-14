@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { IncomingDraftConsumer, isTerminalRefreshFailure, isTerminalStatus, runBounded, type IncomingDraftFetch } from '../src/client/mobile/incoming-draft.ts'
 
 function json(body: unknown, status = 200) {
@@ -11,7 +11,188 @@ function json(body: unknown, status = 200) {
   }
 }
 
+describe('incoming request deadlines', () => {
+  const item = { entryId: 'timeout-entry', targetSessionId: 'session-aaaaaaaa-1', requestId: 'timeout-request', origin: 'camera', state: 'received', name: 'a.txt', bytes: 1 }
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(done => { resolve = done })
+    return { promise, resolve }
+  }
+  function harness(fetchImpl: IncomingDraftFetch) {
+    const attach = vi.fn(() => true), create = vi.fn(), release = vi.fn()
+    const consumer = new IncomingDraftConsumer(fetchImpl, {
+      refreshSessions: async () => {}, retainSession: async () => release,
+      createSession: create, openSession: vi.fn(), sessionScope: () => ({}),
+      attachGenericFile: attach, notify: vi.fn(),
+    })
+    return { consumer, attach, create, release }
+  }
+  beforeEach(() => { vi.useFakeTimers(); vi.spyOn(console, 'warn').mockImplementation(() => {}) })
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+  it.each(['fetch', 'json'] as const)('releases the busy latch after unresolved list %s and retries on the next tick', async stage => {
+    const late = deferred<ReturnType<typeof json>>()
+    const body = deferred<unknown>()
+    const fetchImpl = vi.fn<IncomingDraftFetch>()
+      .mockImplementationOnce(() => late.promise)
+      .mockResolvedValue(json({ items: [] }))
+    const { consumer, attach, create } = harness(fetchImpl)
+    const first = consumer.poll()
+    await vi.advanceTimersByTimeAsync(stage === 'json' ? 3000 : 3999)
+    if (stage === 'json') {
+      late.resolve({ ...json({}), json: () => body.promise })
+      await vi.advanceTimersByTimeAsync(999)
+    }
+    await consumer.poll() // Still in flight: do not overlap list requests.
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await first
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+    await consumer.poll()
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ credentials: 'same-origin', cache: 'no-store' })
+    late.resolve(json({ items: [item] })); body.resolve({ items: [item] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(attach).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['claim-fetch', 'claim-json', 'content-fetch', 'content-blob'] as const)('retains the original %s beyond four seconds without replaying claim or marking content removed', async stage => {
+    const late = deferred<ReturnType<typeof json>>()
+    const body = deferred<unknown>()
+    const blob = deferred<Blob>()
+    let blocked = false
+    const fetchImpl = vi.fn<IncomingDraftFetch>(async path => {
+      if (path.endsWith('/claim')) {
+        if (stage.startsWith('claim') && !blocked) {
+          blocked = true
+          return late.promise
+        }
+        return json({ ok: true, ticket: 'timeout-ticket', name: 'a.txt' })
+      }
+      if (path.includes('/content?')) {
+        if (stage.startsWith('content') && !blocked) { blocked = true; return late.promise }
+        return json({})
+      }
+      if (path.endsWith('/complete')) return json({ ok: true })
+      return json({ items: [item, item] })
+    })
+    const { consumer, attach, create, release } = harness(fetchImpl)
+    const first = consumer.poll()
+    await vi.advanceTimersByTimeAsync(0)
+    const blockedCall = fetchImpl.mock.calls.at(-1)!
+    expect(blockedCall[1]?.signal).toBeUndefined()
+    if (stage.endsWith('json') || stage.endsWith('blob')) {
+      await vi.advanceTimersByTimeAsync(3000)
+      late.resolve({ ...json({}), json: () => body.promise, blob: () => blob.promise })
+      await vi.advanceTimersByTimeAsync(999)
+    } else await vi.advanceTimersByTimeAsync(3999)
+    expect(attach).not.toHaveBeenCalled(); expect(release).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    await consumer.poll()
+    expect(release).not.toHaveBeenCalled()
+    expect(attach).not.toHaveBeenCalled()
+    expect(fetchImpl.mock.calls.filter(([path]) => path.endsWith('/claim'))).toHaveLength(1)
+    expect(fetchImpl.mock.calls.filter(([path]) => path.endsWith('/complete'))).toHaveLength(0)
+    late.resolve(json({ ok: true, ticket: 'late-ticket', name: 'a.txt' }))
+    body.resolve({ ok: true, ticket: 'late-ticket', name: 'a.txt' }); blob.resolve(new Blob(['late']))
+    await vi.advanceTimersByTimeAsync(0)
+    await first
+    expect(attach).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce()
+    await consumer.poll()
+    expect(attach).toHaveBeenCalledOnce(); expect(create).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retains the same completion ticket across timeouts, including the prior-ack drain before list', async () => {
+    const late = deferred<ReturnType<typeof json>>()
+    let completions = 0
+    const fetchImpl = vi.fn<IncomingDraftFetch>(async path => {
+      if (path.endsWith('/claim')) return json({ ok: true, ticket: 'ack-timeout-ticket', name: 'a.txt' })
+      if (path.includes('/content?')) return json({})
+      if (path.endsWith('/complete')) return ++completions <= 2 ? late.promise : json({ ok: true })
+      return json({ items: [item, item] })
+    })
+    const { consumer, attach, create, release } = harness(fetchImpl)
+    const first = consumer.poll()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(attach).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(4000)
+    await first
+    expect(release).toHaveBeenCalledOnce()
+    const second = consumer.poll()
+    await vi.advanceTimersByTimeAsync(3999)
+    expect(fetchImpl.mock.calls.filter(([path]) => path === '/api/android/file-incoming')).toHaveLength(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await second
+    expect(fetchImpl.mock.calls.filter(([path]) => path === '/api/android/file-incoming')).toHaveLength(2)
+    await consumer.poll()
+    const acknowledgements = fetchImpl.mock.calls.filter(([path]) => path.endsWith('/complete'))
+    expect(acknowledgements).toHaveLength(3)
+    expect(acknowledgements.map(([, init]) => JSON.parse(String(init?.body)))).toEqual(Array(3).fill({ ticket: 'ack-timeout-ticket', outcome: 'draft-ready' }))
+    expect(acknowledgements.slice(0, 2).every(([, init]) => init?.signal?.aborted)).toBe(true)
+    late.resolve(json({ ok: true })); await vi.advanceTimersByTimeAsync(0)
+    await consumer.poll()
+    expect(attach).toHaveBeenCalledOnce(); expect(create).not.toHaveBeenCalled()
+    expect(fetchImpl.mock.calls.filter(([path]) => path.endsWith('/claim'))).toHaveLength(1)
+    expect(fetchImpl.mock.calls.filter(([path]) => path.endsWith('/complete'))).toHaveLength(3)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
 describe('IncomingDraftConsumer', () => {
+  it('retries a lost completion acknowledgement without a second attachment admission', async () => {
+    const item = { entryId: 'ack-entry', targetSessionId: 'session-aaaaaaaa-1', requestId: 'ack-request-1', origin: 'camera', state: 'received', name: 'a.txt', bytes: 1 }
+    const attach = vi.fn(() => true)
+    let completed = 0
+    const fetchImpl = vi.fn<IncomingDraftFetch>(async path => {
+      if (path.endsWith('/claim')) return json({ ok: true, ticket: 'ack-ticket', name: 'a.txt' })
+      if (path.includes('/content?')) return json({})
+      if (path.endsWith('/complete')) { completed++; if (completed === 1) throw new Error('receipt lost'); return json({ ok: true }) }
+      return json({ items: [item] })
+    })
+    const consumer = new IncomingDraftConsumer(fetchImpl, { refreshSessions: async () => {}, createSession: vi.fn(), openSession: vi.fn(), sessionScope: () => ({}), attachGenericFile: attach, notify: vi.fn() })
+    await consumer.poll()
+    await consumer.poll()
+    expect(completed).toBe(2)
+    expect(attach).toHaveBeenCalledOnce()
+    expect(fetchImpl.mock.calls.filter(call => call[0].endsWith('/claim'))).toHaveLength(1)
+  })
+  it('hidden consumer keeps exact overlay target A after navigation to B and ignores external entries', async () => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    document.documentElement.setAttribute('data-dsh-session-id', 'session-bbbbbbbb-2')
+    const attach = vi.fn((_id: string, _file: File) => true), open = vi.fn(), create = vi.fn(), release = vi.fn()
+    const fetchImpl = vi.fn<IncomingDraftFetch>()
+      .mockResolvedValueOnce(json({ items: [
+        { entryId: 'target', targetSessionId: 'session-aaaaaaaa-1', requestId: 'request-1234', origin: 'camera', mediaType: 'image/png', state: 'received', name: 'image.png', bytes: 7 },
+        { entryId: 'external', origin: 'external', state: 'received', name: 'other.txt', bytes: 4 },
+      ] }))
+      .mockResolvedValueOnce(json({ ok: true, ticket: 'ticket', name: 'image.png' }))
+      .mockResolvedValueOnce(json({})).mockResolvedValueOnce(json({ ok: true }))
+    const consumer = new IncomingDraftConsumer(fetchImpl, {
+      refreshSessions: async () => {}, createSession: create, openSession: open,
+      retainSession: async () => release, sessionScope: id => id === 'session-aaaaaaaa-1' ? {} : undefined,
+      attachGenericFile: attach, notify: vi.fn(),
+    })
+    try {
+      await consumer.poll()
+      expect(attach).toHaveBeenCalledWith('session-aaaaaaaa-1', expect.any(File))
+      expect(attach.mock.calls[0]?.[1].type).toBe('image/png')
+      expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)).sessionId).toBe('session-aaaaaaaa-1')
+      expect(open).not.toHaveBeenCalled(); expect(create).not.toHaveBeenCalled(); expect(release).toHaveBeenCalledOnce()
+    } finally { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' }) }
+  })
+
+  it('missing fixed target never falls back to current or new session', async () => {
+    const create = vi.fn(), attach = vi.fn()
+    const fetchImpl = vi.fn<IncomingDraftFetch>().mockResolvedValue(json({ items: [
+      { entryId: 'target', targetSessionId: 'session-aaaaaaaa-1', requestId: 'request-1234', origin: 'camera', state: 'received', name: 'a.txt', bytes: 1 },
+    ] }))
+    const consumer = new IncomingDraftConsumer(fetchImpl, { refreshSessions: async () => {}, createSession: create, openSession: vi.fn(), sessionScope: () => undefined, attachGenericFile: attach, notify: vi.fn() })
+    await consumer.poll()
+    expect(create).not.toHaveBeenCalled(); expect(attach).not.toHaveBeenCalled(); expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
   it('hydrates one server-created blank session with a generic file draft and no text prompt', async () => {
     const scope = {}
     const events: string[] = []
@@ -348,6 +529,103 @@ describe('issue #1412 刷新失败不得丢掉 sessionId', () => {
       expect(createSession).toHaveBeenCalledTimes(1)
     } finally {
       window.androidBridge = previous
+    }
+  })
+})
+// issue #1570：`exhaustedFor()` 原先在 hydrate **最开头**无条件 +1，而 hydrate 有三条
+// **非失败**出口（session-refresh-deferred / scope-deferred / createSession 暂不可用）。
+// 冷启动时 sessionScope 前几拍常是 undefined，于是 5 拍 x 4000ms = 20s 就把条目判死，
+// 第 6 拍起直接 return 永不再试 —— 用户分享的文件在冷启动第 21 秒后彻底消失。
+// 判据：只有**真正发起 createSession / claim 并失败**才消耗预算；scope 未就绪不算。
+describe('issue #1570 冷启动 scope 未就绪不得消耗重试预算', () => {
+  const item = { entryId: 'scope-late', sessionId: 'session-cold-0001', state: 'session-created', name: 'a.txt', bytes: 1 }
+
+  it('sessionScope 连续 8 拍 undefined：不得判 exhausted，且 scope 就绪后仍能投递', async () => {
+    let scopeReady = false
+    const attach = vi.fn(() => true)
+    const fetchImpl = vi.fn<IncomingDraftFetch>(async (path: string) => {
+      if (path === '/api/android/file-incoming') return json({ items: [item] })
+      if (path.endsWith('/claim')) return json({ ok: true, ticket: 't-late', name: 'a.txt' })
+      if (path.includes('/content?')) return json({})
+      return json({ ok: true, state: 'draft-ready' })
+    })
+    const consumer = new IncomingDraftConsumer(fetchImpl, {
+      refreshSessions: async () => {},
+      createSession: async () => 'unused',
+      openSession: () => {},
+      // 冷启动：前 8 拍作用域还没绑上（旧实现到第 5 拍就判死）。
+      sessionScope: id => (scopeReady && id === 'session-cold-0001' ? {} : undefined),
+      attachGenericFile: attach,
+      notify: vi.fn(),
+    })
+
+    for (let i = 0; i < 8; i += 1) {
+      await consumer.poll()
+      expect(document.documentElement.getAttribute('data-dsh-incoming-draft-poll'), '第 ' + String(i + 1) + ' 拍不得判死')
+        .not.toBe('exhausted')
+    }
+    expect(attach).not.toHaveBeenCalled()
+
+    // 第 9 拍作用域绑定完成：条目必须仍能投递（预算没被 scope-deferred 吃掉）。
+    scopeReady = true
+    await consumer.poll()
+    expect(attach).toHaveBeenCalledWith('session-cold-0001', expect.any(File))
+  })
+
+  it('负控（必须红）：真正 claim 且持续失败时仍必须耗尽预算并停手', async () => {
+    const attach = vi.fn(() => true)
+    const createSession = vi.fn(async () => 'session-created-9999')
+    const fetchImpl = vi.fn<IncomingDraftFetch>(async (path: string) => {
+      if (path === '/api/android/file-incoming') {
+        return json({ items: [{ entryId: 'claim-stuck', sessionId: 'session-cold-0002', state: 'session-created', name: 'b.txt', bytes: 1 }] })
+      }
+      return json({ ok: false, error: 'incoming entry not found' }, 404)
+    })
+    const consumer = new IncomingDraftConsumer(fetchImpl, {
+      refreshSessions: async () => {},
+      createSession,
+      openSession: () => {},
+      sessionScope: () => ({}),
+      attachGenericFile: attach,
+      notify: vi.fn(),
+    })
+
+    for (let i = 0; i < 8; i += 1) await consumer.poll()
+
+    const claims = fetchImpl.mock.calls.filter(call => String(call[0]).endsWith('/claim'))
+    expect(claims.length, '封顶后不得再无休止 claim').toBeLessThanOrEqual(5)
+    expect(claims.length).toBeGreaterThan(0)
+    expect(document.documentElement.getAttribute('data-dsh-incoming-draft-poll')).toBe('exhausted')
+  })
+
+  it('没有会话可挂时「已停止重试」仍必须可见（不得因为 scope 缺失就静默）', async () => {
+    const events: CustomEvent[] = []
+    const listener = (e: Event): void => { events.push(e as CustomEvent) }
+    window.addEventListener('dsh:export-result', listener)
+    try {
+      const fetchImpl = vi.fn<IncomingDraftFetch>(async (path: string) => {
+        if (path === '/api/android/file-incoming') {
+          return json({ items: [{ entryId: 'no-scope', sessionId: 'session-gone-0003', state: 'session-created', name: 'c.txt', bytes: 1 }] })
+        }
+        return json({ ok: false, error: 'gone' }, 404)
+      })
+      const notify = vi.fn()
+      const consumer = new IncomingDraftConsumer(fetchImpl, {
+        refreshSessions: async () => {},
+        createSession: async () => 'unused',
+        openSession: () => {},
+        // 会话级通知挂不上去（scope 永远拿不到）。
+        sessionScope: () => undefined,
+        attachGenericFile: () => true,
+        notify,
+      })
+      // 作用域有独立上限（MAX_SCOPE_DEFERRALS = 30 拍）；打到该上限才会收敛并提示。
+      for (let i = 0; i < 40; i += 1) await consumer.poll()
+      expect(notify, '会话挂不上时不得假装已经提示过（通知打给了不存在的 scope）').not.toHaveBeenCalled()
+      expect(events.length, '没有 scope 时必须走全局可见结果通道').toBe(1)
+      expect(String(events[0]?.detail?.detail ?? ''), '必须说清已停止自动重试').toContain('停止自动重试')
+    } finally {
+      window.removeEventListener('dsh:export-result', listener)
     }
   })
 })

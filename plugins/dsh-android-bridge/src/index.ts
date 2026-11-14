@@ -26,6 +26,7 @@ import {
   realScreenAdbCommandDenied,
   adbCommandDisplayTokens,
   screenTokensFromSfDump,
+  stripDisplayOptions,
   isVirtualScreenId,
   type ScreenAccessDecision,
   type UserScreenScope,
@@ -61,6 +62,8 @@ import {
   turnEndOk,
   TURN_END_KINDS,
   visibleText,
+  reasoningText,
+  reasoningSummary,
   boundReportBody,
   REPORT_BODY_MAX,
 } from './notify-projection.js'
@@ -84,6 +87,8 @@ export {
   turnEndOk,
   TURN_END_KINDS,
   visibleText,
+  reasoningText,
+  reasoningSummary,
   boundReportBody,
   toLosslessJson,
   findUndefinedPaths,
@@ -682,10 +687,39 @@ function looksDangerousRemovePath(remote: unknown): boolean {
   return !ALLOWED_ROOTS.some((root) => norm.startsWith(root + '/'))
 }
 
+/**
+ * `input keyevent` 的导航/电源键（**词形**写法：`POWER` / `HOME` / `MENU` / `KEYCODE_HOME`）——issue #1596。
+ *
+ * 词形同时接受 `KEYCODE_` 前缀：`KeyEvent.keyCodeFromString` 认这个前缀，`input keyevent KEYCODE_HOME`
+ * 与 `input keyevent HOME` 是同一个按键（两种写法都必须拦，否则换一种即可逃逸）。
+ *
+ * 缺陷形态（修前）：`/\binput\s+(keyevent|text)\s+.*(power|home|menu)/` 把 `text` 也放进了命令位置，
+ * 于是 `android_ui_input {action:"text", text:"go home"}` 构造出的 `input text go%shome` 命中，
+ * 回执变成「命令被特权 shell 通道危险检查拦截（系统配置/权限写面一律拒绝）」——**普通文本输入被
+ * 判成危险命令**，能力不可用，且失败归因完全错误（用户会去查权限，而真因是正则写宽了）。
+ *
+ * 判据只认 `keyevent` 子命令：`text` 的载荷是用户要输入的文字，那里的任何词都不是命令身份；
+ * 只有 `keyevent` 的载荷才决定注入哪个按键。本判据与 [INPUT_KEYEVENT_POWER_KEYCODE] 成对使用。
+ */
+const INPUT_KEYEVENT_POWER = /\binput\s+keyevent\s+(?:.*\s)?(?:keycode_)?(?:power|home|menu)\b/
+
+/**
+ * 同上，但按键用**数字键码**拼写（issue #1596 的后半句：旧判据「想拦的目标其实拦不住」）。
+ *
+ * `input keyevent 3`（KEYCODE_HOME）、`26`（KEYCODE_POWER）、`82`（KEYCODE_MENU）都是纯数字，
+ * 旧正则的 `power|home|menu` 词面匹配看不见它们 —— 于是同一条黑名单既误拦普通文本输入、
+ * 又漏掉真正的系统键注入。键码取自 `InputEvent` 的公开常量，与前面词形判据同一个命令位置。
+ * `\b` 边界保证 `13` / `263` 这类不会误命中。
+ */
+const INPUT_KEYEVENT_POWER_KEYCODE = /\binput\s+keyevent\s+(?:.*\s)?(?:3|26|82)\b/
+
 /** ADB 通道附加黑名单（shell uid=2000 执行面比 app uid 更危险：系统级配置/权限写面一律拒绝）。 */
 function looksDangerousAdb(command: string): boolean {
   if (looksDangerous(command)) return true
-  const c = command.toLowerCase()
+  // 目标屏参数要在**匹配这些模式之前**归一化掉：`input -d 7 keyevent 3` 是 Android CLI 的正式写法
+  // （`input [-d DISPLAY_ID] <command>`），选项顶掉命令词位置 ⇒ `input\\s+keyevent` 匹配不到 ⇒
+  // 换个写法就能注入系统键。与 screen-scope 的命令词面同一归一化（stripDisplayOptions）。
+  const c = stripDisplayOptions(command).toLowerCase()
   const PATTERNS_ADB = [
     /\bsettings\s+(put|delete)\b/,
     /\bpm\s+(grant|revoke|set-permission|uninstall|install|disable-user|enable)\b/,
@@ -694,7 +728,8 @@ function looksDangerousAdb(command: string): boolean {
     /\bsvc\b/,
     /\bmount\b/,
     /\bcmd\s+(package|wifi|connectivity)\s+(set|reset|enable|disable)\b/,
-    /\binput\s+(keyevent|text)\s+.*(power|home|menu)/,
+    INPUT_KEYEVENT_POWER,
+    INPUT_KEYEVENT_POWER_KEYCODE,
   ]
   return PATTERNS_ADB.some((p) => p.test(c))
 }
@@ -2147,6 +2182,22 @@ export function apply(ctx: Context, config: Record<string, unknown> = {}) {
     }
     // callId → {name, args, start}（tool/result 按 source.callId 配对，给耗时与参数）
     const liveCalls = new Map<string, { name: string; args: string; start: number }>()
+    /**
+     * 会话内「已发起、尚未结束」的调用队列（悬浮卡片「进行中/完成」的工具行必须能配对）。
+     *
+     * 为什么需要：`tool/call` 的 `callId` 与 `tool/result` 的 `message.source.callId`
+     * 是同一个上游 id，正常路径下一定成对出现。但投影层不能假设它恒在——上游换 provider /
+     * 旧版本引擎都可能不带。此时若只写字面量，壳侧只能靠「同名同参」猜配对，两把并发的
+     * 同名工具（例如连续两次 read 不同文件）就会把结果按错行。
+     *
+     * 做法：每条 `tool/call` 都入队（上游 id 优先，缺了就用 **会话内递增序号** `anon-<n>`）。
+     * 结果侧有上游 id 时按 id 从队列里摘掉自己；没有 id 时按 FIFO 认领最早一条未配对的调用。
+     * 队列按「调用发起顺序」而非「结束顺序」，所以并发同名工具也能稳定配对。
+     *
+     * 生成 id 与上游 id 共用同一个 Map（键碰撞风险为零：上游 id 不会以 `anon-` 开头）。
+     */
+    const livePendingCalls = new Map<string, Array<{ callId: string; name: string; args: string; start: number }>>()
+    const liveAnonSeq = new Map<string, number>()
     const live = (session: unknown, ev: { type?: string; data?: Record<string, unknown> }) => {
       const sess = session as { id?: unknown } | undefined
       const s = String(sess?.id ?? '')
@@ -2159,20 +2210,43 @@ export function apply(ctx: Context, config: Record<string, unknown> = {}) {
       if (k === 'tool/call') {
         const d = ev.data as { name?: string; arguments?: string; callId?: string }
         const args = String(d.arguments ?? '').slice(0, 240)
-        if (d.callId) liveCalls.set(String(d.callId), { name: String(d.name ?? ''), args, start: t })
-        appendLive(JSON.stringify({ t, s, k: 'tool_call', name: String(d.name ?? ''), args }) + '\n')
+        const name = String(d.name ?? '')
+        // callId 是**追加字段**（旧壳忽略未知键）：上游给就用上游 id，否则生成会话内递增序号。
+        let callId = d.callId ? String(d.callId) : ''
+        if (callId === '') {
+          const next = (liveAnonSeq.get(s) ?? 0) + 1
+          liveAnonSeq.set(s, next)
+          callId = 'anon-' + next
+        }
+        const queue = livePendingCalls.get(s) ?? []
+        queue.push({ callId, name, args, start: t })
+        livePendingCalls.set(s, queue)
+        liveCalls.set(callId, { name, args, start: t })
+        appendLive(JSON.stringify({ t, s, k: 'tool_call', name, args, callId }) + '\n')
         return
       }
       if (k === 'tool/result') {
         const d = ev.data as { message?: { source?: { callId?: string }; content?: Array<Record<string, unknown>> } }
-        const callId = d?.message?.source?.callId ? String(d.message.source.callId) : ''
-        const call = callId ? liveCalls.get(callId) : undefined
+        let callId = d?.message?.source?.callId ? String(d.message.source.callId) : ''
+        // 结果侧同样可能没有上游 id：按 FIFO 认领最早一条未配对的调用，保证与 tool_call 行配对。
+        const queue = livePendingCalls.get(s) ?? []
+        if (callId !== '') {
+          // 有上游 id：只移除自己，不能顺手把别人的队首摘掉。
+          const index = queue.findIndex((pending) => pending.callId === callId)
+          if (index >= 0) queue.splice(index, 1)
+        } else {
+          const pending = queue.shift()
+          if (pending !== undefined) callId = pending.callId
+        }
+        if (queue.length === 0) livePendingCalls.delete(s)
+        else livePendingCalls.set(s, queue)
+        const call = callId !== '' ? liveCalls.get(callId) : undefined
         const err = Array.isArray(d?.message?.content) && d.message.content.some((c) => c.isError === true)
         appendLive(JSON.stringify({
           t, s, k: 'tool_result', name: call?.name ?? '', args: call?.args ?? '',
-          dur: call ? t - call.start : undefined, err,
+          dur: call ? t - call.start : undefined, err, callId,
         }) + '\n')
-        if (callId) liveCalls.delete(callId)
+        if (callId !== '') liveCalls.delete(callId)
         if (liveCalls.size > 256) { const first = liveCalls.keys().next().value; if (first !== undefined) liveCalls.delete(first) }
         return
       }
@@ -2182,6 +2256,13 @@ export function apply(ctx: Context, config: Record<string, unknown> = {}) {
         // （dsh/packages/llm/llm/src/types.ts:54-64），思考通常排在最前，于是壳侧的汇报摘要
         // 与工具行 chip 显示的是「某一段思考内容」。判据与修法见 notify-projection.visibleText。
         const content = (ev.data as { message?: { content?: unknown } })?.message?.content
+        // 思考行（设计 §5.3 / N1）：与可见正文同一事件、同一投影层。
+        // 为什么单独一行而不塞进 text 行：壳侧旧包对未知 k 走 else 忽略，而 text 行是工具行 chip
+        // 的既有数据源——把思考塞进去会污染正文显示；独立 k 才能让新卡片的「思考单行」与
+        // 「最新进展」各自取值，且旧壳零改动。
+        // 空/纯空白不写行：思考块存在但内容为空时写一行空摘要，只会让卡片显示一条空白行。
+        const think = reasoningSummary(content)
+        if (think !== '') appendLive(JSON.stringify({ t, s, k: 'think', sum: think }) + '\n')
         const text = visibleText(content)
         appendLive(JSON.stringify({ t, s, k: 'text', sum: text.slice(0, 160) || '（空回复）' }) + '\n')
         return

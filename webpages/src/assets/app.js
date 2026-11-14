@@ -1,7 +1,7 @@
 /** Static release data only. Probes select a route, never a version. */
 import {
   LATEST_RELEASE_URL, MIRROR_TEMPLATES, SUPPORTED_ABIS,
-  assetUrl, classifyAbi, formatBytes, pickAsset, probeUrl,
+  assetUrl, classifyAbi, formatBytes, manifestUrl, pickAsset, probeUrl,
 } from './release.js';
 import { t, translatePage, toggleLocale } from './locales.js';
 import { selectRoute } from './routing.js';
@@ -160,7 +160,8 @@ async function verifySeedDigest() {
   let computed = '';
   let manifestDigest = null;
   try {
-    const res = await fetch(probeUrl(state.current) + '?dsh=' + Date.now(), { cache: 'no-store' });
+    // 必须按 data.tag 取 MANIFEST：seed 的 manifestSha256 也是按 data.tag 算的（不是 latest）。
+    const res = await fetch(manifestUrl(state.current, data.tag) + '?dsh=' + Date.now(), { cache: 'no-store' });
     if (res.ok) {
       const text = await res.text();
       computed = await sha256HexOf(text);
@@ -181,7 +182,11 @@ function render() {
   if (!data?.tag) { body.innerHTML = '<p>' + t('error') + '</p><a class="btn2" href="' + LATEST_RELEASE_URL + '">' + t('history') + '</a>'; return; }
   const asset = c.abi && pickAsset(data.tag, c.abi, data.assets);
   if (c.confidence === 'unsupported') {
-    body.innerHTML = '<h3>' + t('unsupported') + '</h3><p class="dev">' + t('unsupportedHelp') + '</p>';
+    // issue #1606：明确不支持的设备给「全部版本」出口，但**绝不**给改架构入口。
+    // 改架构那条路（下面 switch-abi 的 !c.abi 分支）会把架构硬写成 arm64/likely 并重绘成
+    // 下载分支，用户于是下到 160MB 装不上的包（INSTALL_FAILED_NO_MATCHING_ABIS）。
+    body.innerHTML = '<h3>' + t('unsupported') + '</h3><p class="dev">' + t('unsupportedHelp') + '</p>' +
+      '<a class="btn2" href="' + LATEST_RELEASE_URL + '">' + t('history') + '</a>';
   } else if (!c.abi) {
     body.innerHTML = '<p class="dev">' + t('chooseAbi') + '</p>' + SUPPORTED_ABIS.filter(abi => pickAsset(data.tag, abi, data.assets)).map(abi =>
       '<a class="' + (abi === 'arm64' ? 'btn' : 'btn2') + '" data-abi="' + abi + '" href="' + esc(assetUrl(state.current, data.tag, pickAsset(data.tag, abi, data.assets).name)) + '">' +
@@ -206,9 +211,16 @@ function render() {
       catch { event.target.textContent = t('copyFailed'); }
     });
   }
-  if (!asset) body.innerHTML += routeMarkup() + '<div class="architecture"><button id="switch-abi" type="button">' + t('changeAbi') + '</button></div>';
+  // issue #1606：这条追加原先在 if/else 链**之外**，于是「明确不支持」的设备也照样拿到
+  // 来源选择与「更换架构」按钮 —— 点一下就把架构硬写成 arm64/likely 并重绘成下载分支。
+  // 不支持态既没有可下的资产，也没有可切换的架构，必须整块不渲染。
+  if (!asset && c.confidence !== 'unsupported') {
+    body.innerHTML += routeMarkup() + '<div class="architecture"><button id="switch-abi" type="button">' + t('changeAbi') + '</button></div>';
+  }
   document.getElementById('source-mode')?.addEventListener('change', event => { state.mode = event.target.value; updateRoute(); });
   document.getElementById('switch-abi')?.addEventListener('click', () => {
+    // 兜底：即使有别的路径把按钮送进 DOM，也不允许从不支持态被拉回下载分支。
+    if (c.confidence === 'unsupported') return;
     if (!c.abi) {
       state.classification = { abi: 'arm64', confidence: 'likely', manual: true };
     } else {

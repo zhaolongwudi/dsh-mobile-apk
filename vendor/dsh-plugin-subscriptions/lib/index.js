@@ -1045,10 +1045,21 @@ function writeBackClaudeCodeCredentials(next, expectedPriorAccessToken) {
 async function refreshClaudeSynced(session, doRefresh) {
 	const fromSource = readClaudeCodeCredentials();
 	const base = fromSource !== void 0 && fromSource.accessToken !== session.accessToken ? fromSource : session;
-	if (base.expiresAt > Date.now() + 6e4) return base;
+	// issue #1589: `keychainBound` is the ONLY marker that this account follows Claude
+	// Code's own credential store, and neither branch below carries it: `fromSource`
+	// comes straight from that store (the marker never exists there), and the refreshed
+	// session is rebuilt from token fields only. So TokenManager.doRefresh saved a
+	// session WITHOUT the marker on the first successful refresh, and the 5-minute sync
+	// timer (`if (session.keychainBound !== true) continue`) skipped the account from
+	// then on. Re-attach the marker to whatever this function returns.
+	const keepBound = (value) => session !== void 0 && session.keychainBound === true
+		&& value !== void 0 && value.keychainBound !== true
+		? { ...value, keychainBound: true }
+		: value;
+	if (base.expiresAt > Date.now() + 6e4) return keepBound(base);
 	const next = await doRefresh(base);
 	writeBackClaudeCodeCredentials(next, base.accessToken);
-	return next;
+	return keepBound(next);
 }
 
 //#endregion
@@ -2595,12 +2606,15 @@ var OAuthEndpointError = class extends Error {
 	* indefinitely.
 	*/
 	retryAfterMs;
-	constructor(message, status, oauthCode, retryAfterMs$1) {
+	/** Whether the response carried explicit rate-limit headers (e.g. retry-after or x-ratelimit-remaining: 0). */
+	rateLimited;
+	constructor(message, status, oauthCode, retryAfterMs$1, rateLimited = false) {
 		super(message);
 		this.name = "OAuthEndpointError";
 		this.status = status;
 		this.oauthCode = oauthCode;
 		this.retryAfterMs = retryAfterMs$1;
+		this.rateLimited = rateLimited;
 	}
 };
 /**
@@ -2626,9 +2640,14 @@ async function oauthEndpointError(response, label) {
 			if (typeof nested.message === "string") detail = nested.message;
 		}
 		if (typeof parsed.error_description === "string") detail = parsed.error_description;
+		if (detail.length === 0 && typeof parsed.message === "string") detail = parsed.message;
 		if (detail.length === 0) detail = oauthCode ?? "";
 	} catch {}
-	return new OAuthEndpointError(detail.length > 0 ? `${label} token endpoint error (HTTP ${String(response.status)}): ${detail}` : `${label} token endpoint error (HTTP ${String(response.status)})`, response.status, oauthCode, parseRetryAfterMs(response));
+	const retryAfterMs$1 = parseRetryAfterMs(response);
+	const hasRetryAfter = response.headers.get("retry-after") !== null;
+	const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
+	const rateLimited = retryAfterMs$1 !== void 0 || hasRetryAfter || rateLimitRemaining?.trim() === "0";
+	return new OAuthEndpointError(detail.length > 0 ? `${label} token endpoint error (HTTP ${String(response.status)}): ${detail}` : `${label} token endpoint error (HTTP ${String(response.status)})`, response.status, oauthCode, retryAfterMs$1, rateLimited);
 }
 /**
 * Per-provider session freshness: loads the stored session, refreshes
@@ -8658,7 +8677,12 @@ async function refreshCopilot(session, fetchFn = proxiedFetch) {
 * @returns true when re-login is the only fix (GitHub token revoked or the subscription lost).
 */
 function isCopilotPermanentRefreshError(error) {
-	return error instanceof OAuthEndpointError && (error.status === 401 || error.status === 403);
+	if (!(error instanceof OAuthEndpointError)) return false;
+	if (error.status === 401) return true;
+	if (error.status !== 403) return false;
+	if (error.rateLimited || error.retryAfterMs !== void 0) return false;
+	if (/rate.?limit/i.test(error.message)) return false;
+	return true;
 }
 /** Display name for one Copilot wire reasoning-effort value. */
 function copilotEffortName(effort) {
