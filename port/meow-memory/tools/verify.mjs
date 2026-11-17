@@ -35,7 +35,7 @@ const argOf = (k, d) => {
 };
 const AS_JSON = argv.includes('--json');
 const PKG = 'meow-memory';
-const VERSION = '0.32.6';
+const VERSION = '0.32.7';
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 const PROFILE = argOf('--profile', process.env.PROFILE || 'web');
 const PROFILE_DIR = path.join(DSH_HOME, 'profiles', PROFILE);
@@ -45,9 +45,9 @@ const STORE = path.join(WORKSPACE, '.dsh-meow', 'memory.db');
 const LAYERS = ['soul', 'user', 'project', 'fact', 'lesson', 'topic', 'rules'];
 const EXPECT_SHA16 = {
   // index.js 是 port 补丁后态（normalizeProjectDir 兜底），不是上游原文
-  'lib/index.js': 'd0cc1bf9c58c910f',
+  'lib/index.js': '68d53a67c4f5c694',
   // client.js 是 port 补丁后态（设置页响应式 + 模型下拉 + 目录选择器只给 homeDir），不是上游原文
-  'lib/client.js': '917f0c22bafb62ae',
+  'lib/client.js': '366bdd9ebdbc89a3',
   'cordis.patch.yml': 'd725feec27202e78',
 };
 

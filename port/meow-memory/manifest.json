@@ -1,10 +1,10 @@
 {
   "kit": "meow-memory",
   "package": "meow-memory",
-  "version": "0.32.6",
+  "version": "0.32.7",
   "license": "MIT",
   "replaces": "dsh-memento",
-  "installedAt": "2026-11-12T12:44:00+08:00",
+  "installedAt": "2026-11-14T21:35:53.887Z",
   "platform": {
     "dsh": "0.2.2-rc.1",
     "node": "v24.18.0",
@@ -14,11 +14,11 @@
     "runtimeDependencies": 0
   },
   "source": {
-    "registry": "https://registry.npmjs.org/meow-memory/-/meow-memory-0.32.6.tgz",
-    "integrity": "sha512-R531WfkAme2tXKuPB6j70G9Vp0lyvopq5vLOdSRkFPdr3Ad8bTq18UHhW6ijctPi2taAz5D0qnU5dHW5fBvaqw==",
-    "shasum": "182fa20747b4402e73d0188b8824eb4fb6af6d36",
+    "registry": "https://registry.npmjs.org/meow-memory/-/meow-memory-0.32.7.tgz",
+    "integrity": "sha512-ZiJNSKYcim12lEL6OBJqqzvPLSeCXAbwBPpqVdtJIjtueGs03C38xcxEW+JQFv9wCFl8msBdxOuSafkAoWJqpg==",
+    "shasum": "14be389bfa0e87ed2237e4e01afb2ffb7efef07c",
     "repo": "https://github.com/Phant0Meow/dsh-meow-memory",
-    "offlineTarball": "pkg/meow-memory-0.32.6.tgz",
+    "offlineTarball": "pkg/meow-memory-0.32.7.tgz",
     "offlineSha256": "92b1e73f697a0142000b85016ddc798b0868ccb3408a748def28a7b00bf62b01"
   },
   "landing": {
@@ -29,12 +29,12 @@
   },
   "installedFiles": {
     "count": 44,
-    "bytes": 1669699,
+    "bytes": 1695985,
     "sha256_16": {
-      "lib/index.js": "d0cc1bf9c58c910f",
-      "lib/client.js": "917f0c22bafb62ae",
+      "lib/index.js": "68d53a67c4f5c694",
+      "lib/client.js": "366bdd9ebdbc89a3",
       "cordis.patch.yml": "d725feec27202e78",
-      "package.json": "8a4611e90f54fdd2"
+      "package.json": "21f8ab5347f7f1d3"
     }
   },
   "portPatches": {

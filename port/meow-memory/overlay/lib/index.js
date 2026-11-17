@@ -3051,6 +3051,7 @@ function formatRow(r, kwLabel, noneLabel) {
 function buildDreamMessage(db, sessionId, T2, rounds, idx) {
   const round = rounds[idx];
   const lbl3 = (key, params) => fillTemplate(keyedValue("labels", key), params);
+  const groupMarker = `[meow-dream-group ${idx + 1}/${rounds.length} ${lbl3(`dream.round.${round.kind}`)}]`;
   const lines = [
     `${DREAM_MARKER} ${lbl3("dream.title")}`,
     "",
@@ -3063,7 +3064,7 @@ function buildDreamMessage(db, sessionId, T2, rounds, idx) {
     ""
   ];
   if (round.kind === "project-summary") {
-    lines.push(...resolveSlotText("dream-project-summary", { projects: (round.projects ?? []).join("\u3001") }).split("\n"));
+    lines.push(...resolveSlotText("dream-project-summary", { projects: (round.projects ?? []).join("\u3001"), groupMarker }).split("\n"));
   } else {
     const kwLabel = lbl3("dream.row.keywordsLabel");
     const noneLabel = lbl3("dream.row.none");
@@ -3076,7 +3077,7 @@ ${g.rows.map((r) => formatRow(r, kwLabel, noneLabel)).join("\n")}`;
 ${lbl3("dream.topic.empty")}` : `
 
 ${groupsText}`;
-    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock }).split("\n"));
+    lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock, groupMarker }).split("\n"));
   }
   return createUserMessage({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
 }
@@ -3213,7 +3214,9 @@ function finalizeDream(db, sessionId, workspace, dir, T2, reason, groupsCount, o
     db.finishDream(sessionId, Date.now());
     db.logDream(
       `window dream ${reason}: ${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped} T=${new Date(T2).toISOString()}`,
-      { before: void 0, after: void 0 }
+      // #108：changes 落真实计数（此前两处调用硬编码 {before:undefined,after:undefined}
+      // → JSON {}，查库的人会误读成"什么都没改"）。stamped=本轮封存/完结条目数。
+      { stamped, groups: groupsCount }
     );
     dreamLog(workspace, dir, `dream ${reason} session=${shortSessionId(sessionId)} groups=${groupsCount} stamped=${stamped}`);
     onDreamState?.(sessionId, "dreamed");
@@ -3329,7 +3332,8 @@ function recoverInterruptedDream(db, sessionId, workspace, dir = ".dsh-meow") {
   db.finishDream(sessionId, Date.now());
   db.logDream(
     `window dream recovered (interrupted): ${shortSessionId(sessionId)} stamped=${stamped} T=${new Date(T2).toISOString()}`,
-    { before: void 0, after: void 0 }
+    { stamped }
+    // #108：changes 落真实计数，不再硬编码空对象
   );
   dreamLog(workspace, dir, `dream recovered session=${shortSessionId(sessionId)} stamped=${stamped}`);
   return stamped;
@@ -5187,12 +5191,52 @@ ${e.stack ?? ""}` : String(e)}
   };
   if (resolved.delegate.modelSpec !== void 0) {
     const spec = resolved.delegate.modelSpec;
+    const delegateEffort = resolved.delegate.effort;
     const delegateRestore = /* @__PURE__ */ new Map();
     const MAX_DELEGATE_TRACKED = 512;
+    const rememberOverride = (sid, main, route) => {
+      if (sid === "unknown" || delegateRestore.has(sid)) return;
+      delegateRestore.set(sid, { main, route });
+      while (delegateRestore.size > MAX_DELEGATE_TRACKED) {
+        const oldest = delegateRestore.keys().next().value;
+        if (oldest === void 0) break;
+        delegateRestore.delete(oldest);
+      }
+    };
+    ctx.on("agent/pre-step", async (payload, next) => {
+      const agent = payload?.agent;
+      if (agent === void 0 || typeof agent.model?.select !== "function") return next();
+      if (agent.session?.header?.origin === "subagent") return next();
+      const sel = payload.modelSelection;
+      const sid = sessionIdOfAgent(agent);
+      const events = sessionEventsOf(agent.session);
+      if (isMemoryTaskTurn(events)) {
+        const route = { provider: spec.provider ?? sel?.provider, model: spec.model ?? sel?.model };
+        rememberOverride(sid, mainRouteOf(sel ?? {}), route);
+        ctx.logger.info(`meow-memory: memory task turn \u2192 model override ${route.provider}/${route.model}${delegateEffort === void 0 ? " (effort stripped)" : ` (effort ${delegateEffort})`}`);
+        agent.model.select(
+          delegateEffort === "inherit" && sel?.reasoningEffort !== void 0 ? { provider: route.provider, model: route.model, reasoningEffort: String(sel.reasoningEffort) } : delegateEffort !== void 0 && delegateEffort !== "inherit" ? { provider: route.provider, model: route.model, reasoningEffort: delegateEffort } : { provider: route.provider, model: route.model }
+        );
+        return next();
+      }
+      const remembered = delegateRestore.get(sid);
+      if (remembered === void 0) return next();
+      delegateRestore.delete(sid);
+      if (userSelectedAfterOverride(events, remembered.route)) return next();
+      if (sel?.provider !== remembered.route.provider || sel?.model !== remembered.route.model) return next();
+      ctx.logger.info(`meow-memory: restore main model ${remembered.main.provider}/${remembered.main.model} after memory task turn`);
+      agent.model.select({
+        provider: remembered.main.provider,
+        model: remembered.main.model,
+        ...remembered.main.reasoningEffort === void 0 ? {} : { reasoningEffort: remembered.main.reasoningEffort }
+      });
+      return next();
+    });
     ctx.on("agent/request", async (payload, next) => {
       const config3 = await next();
       const agent = payload?.agent;
-      if (agent === void 0 || agent.session?.header?.origin === "subagent") return config3;
+      if (agent === void 0 || typeof agent.model?.select === "function") return config3;
+      if (agent.session?.header?.origin === "subagent") return config3;
       const sid = sessionIdOfAgent(agent);
       const events = sessionEventsOf(agent.session);
       if (isMemoryTaskTurn(events)) {

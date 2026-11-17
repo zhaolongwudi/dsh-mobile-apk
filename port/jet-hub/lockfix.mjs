@@ -70,7 +70,11 @@ if (argv[1] === "--scan") {
   for (const [name, spec] of Object.entries(declared)) {
     const pkgJson = join(profile, "node_modules", name, "package.json")
     const installed = existsSync(pkgJson) ? JSON.parse(readFileSync(pkgJson, "utf8")).version : null
-    const lock = locked.get(name) || null
+    const lockRaw = locked.get(name) || null
+    // pnpm 9 的 version 行会带 peer 后缀：`0.32.7(@deepseek-ai/schemastery@3.19.0)`。
+    // 只比前段版本号，否则「实装 0.32.7 vs 锁里 0.32.7(...)」会被误判成 drift
+    // （2026-11-15 实测：meow-memory 用 pnpm 正常装完，第 8 段却报 drift）。
+    const lock = lockRaw !== null ? lockRaw.replace(/\(.*$/, "") : null
     let state
     if (installed && lock && lock === installed) state = "ok"
     else if (installed && lock) state = "drift" // ① 版本偏离，可修
