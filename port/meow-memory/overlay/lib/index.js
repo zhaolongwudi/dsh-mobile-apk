@@ -1,9 +1,9 @@
 // src/index.ts
 import { boundContextSummary, createUserMessage as createUserMessage3 } from "@deepseek-ai/dsh-llm";
 import z from "@deepseek-ai/schemastery";
-import { appendFileSync as appendFileSync2, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync8, renameSync as renameSync6, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync5 } from "node:fs";
+import { appendFileSync as appendFileSync3, existsSync as existsSync9, mkdirSync as mkdirSync6, readFileSync as readFileSync8, renameSync as renameSync6, statSync as statSync3, unlinkSync, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname6, join as join9 } from "node:path";
+import { dirname as dirname6, join as join10 } from "node:path";
 
 // src/db.ts
 import { randomUUID } from "node:crypto";
@@ -433,7 +433,8 @@ var COMMON_COLS = `
   hit_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  last_accessed_at INTEGER
+  last_accessed_at INTEGER,
+  editHistory_infoFrom TEXT
 `;
 var SCHEMAS = {
   soul: `CREATE TABLE IF NOT EXISTS soul (${COMMON_COLS})`,
@@ -542,6 +543,9 @@ var MemoryDb = class {
       if (level === "topic" && !cols.has("project")) {
         this.db.exec("ALTER TABLE topic ADD COLUMN project TEXT");
       }
+      if (!cols.has("editHistory_infoFrom")) {
+        this.db.exec(`ALTER TABLE ${level} ADD COLUMN editHistory_infoFrom TEXT`);
+      }
       const legacy = this.p(`SELECT id FROM ${level}`).all();
       for (const { id } of legacy) {
         if (/^[0-9a-z]{9}-/.test(id)) continue;
@@ -603,15 +607,16 @@ var MemoryDb = class {
       hit_count: row.hit_count ?? 0,
       created_at: row.created_at ?? now,
       updated_at: row.updated_at ?? now,
-      last_accessed_at: row.last_accessed_at ?? null
+      last_accessed_at: row.last_accessed_at ?? null,
+      editHistory_infoFrom: row.editHistory_infoFrom ?? null
     };
     this.db.prepare(
-      `INSERT INTO ${full.level} (id, title, content, importance, keywords, status, source_session, hit_count, created_at, updated_at, last_accessed_at
+      `INSERT INTO ${full.level} (id, title, content, importance, keywords, status, source_session, hit_count, created_at, updated_at, last_accessed_at, editHistory_infoFrom
           ${full.level === "project" ? ", project, subcategory" : ""}
           ${full.level === "fact" || full.level === "lesson" || full.level === "rules" ? ", project" : ""}
           ${full.level === "lesson" ? ", corrected" : ""}
           ${full.level === "topic" ? ", goal, project" : ""}
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
           ${full.level === "project" ? ", ?, ?" : ""}
           ${full.level === "fact" || full.level === "lesson" || full.level === "rules" ? ", ?" : ""}
           ${full.level === "lesson" ? ", ?" : ""}
@@ -629,6 +634,7 @@ var MemoryDb = class {
       full.created_at,
       full.updated_at,
       full.last_accessed_at,
+      full.editHistory_infoFrom,
       ...full.level === "project" ? [full.project ?? "", full.subcategory] : [],
       ...full.level === "fact" || full.level === "lesson" || full.level === "rules" ? [full.project] : [],
       ...full.level === "lesson" ? [full.corrected] : [],
@@ -678,6 +684,7 @@ var MemoryDb = class {
     }
     if (patch.subcategory !== void 0 && level === "project") push("subcategory", patch.subcategory);
     if (patch.goal !== void 0 && level === "topic") push("goal", patch.goal);
+    if (patch.editHistory !== void 0) push("editHistory_infoFrom", patch.editHistory);
     if (patch.project !== void 0 && level === "topic") push("project", patch.project);
     if (sets.length === 0) return false;
     push("updated_at", Date.now());
@@ -957,7 +964,8 @@ var MemoryDb = class {
       hit_count: Number(r.hit_count ?? 0),
       created_at: Number(r.created_at),
       updated_at: Number(r.updated_at),
-      last_accessed_at: r.last_accessed_at == null ? null : Number(r.last_accessed_at)
+      last_accessed_at: r.last_accessed_at == null ? null : Number(r.last_accessed_at),
+      editHistory_infoFrom: r.editHistory_infoFrom == null ? null : String(r.editHistory_infoFrom)
     };
   }
 };
@@ -1021,6 +1029,8 @@ var CONFIG_DEFAULTS = {
   projectDir: ".dsh-meow",
   hitTopK: 2,
   titleMax: 40,
+  /** 首轮画像条数上限（soul+user 合并池按 importance→新近度截 top N；0=全量）。 */
+  profileMax: 0,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -1042,7 +1052,10 @@ var CONFIG_DEFAULTS = {
   backup: { enabled: false },
   /** 工作区停用名单（#28）：列出的工作区（cwd 归一匹配）完全停用记忆——读/整理/写
    *  全部拒绝（含手动 /dream）。用于一次性任务的工作区，避免污染记忆库。 */
-  disabledWorkspaces: []
+  disabledWorkspaces: [],
+  /** 隐私倾向（默认关=记忆如实记录）：开启后 memory_remember / memory_update 的
+   *  工具描述追加「不记录敏感信息」红线句（prompt 级约束，非写入闸门）。 */
+  privacy: { enabled: false }
 };
 function factoryDefaultOf(spec) {
   const scope = spec.sub === void 0 ? CONFIG_DEFAULTS : CONFIG_DEFAULTS[spec.sub];
@@ -1377,10 +1390,10 @@ async function ensureV0SessionsMigrated(projectDir, log) {
 }
 
 // src/dream.ts
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
-import { appendFileSync, existsSync as existsSync6, readdirSync as readdirSync4, readFileSync as readFileSync6 } from "node:fs";
+import { createUserMessage as createUserMessage2 } from "@deepseek-ai/dsh-llm";
+import { appendFileSync as appendFileSync2, existsSync as existsSync6, readdirSync as readdirSync4, readFileSync as readFileSync6 } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { join as join7 } from "node:path";
+import { join as join8 } from "node:path";
 
 // src/inject.ts
 import { mkdirSync as mkdirSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
@@ -1849,7 +1862,7 @@ function topicDrift(turnText, topics) {
 }
 
 // src/inject.ts
-var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40 };
+var DEFAULT_OPTS = { hitTopK: 2, titleMax: 40, profileMax: 0 };
 function sessionsFile(workspace, sessionId, dir = ".dsh-meow") {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
   return join6(workspace, dir, "sessions", `${safe}.json`);
@@ -1985,8 +1998,15 @@ function toDocs(rows) {
 }
 function buildInjectionBody(db, o) {
   const lbl3 = (key, params) => fillTemplate(keyedValue("labels", key), params);
-  const soul = db.list("soul", { status: "active" });
-  const user = db.list("user", { status: "active" });
+  const soulAll = db.list("soul", { status: "active" });
+  const userAll = db.list("user", { status: "active" });
+  let soul = soulAll;
+  let user = userAll;
+  if (o.profileMax > 0 && soulAll.length + userAll.length > o.profileMax) {
+    const kept = [...soulAll, ...userAll].sort((a, b) => b.importance - a.importance || b.updated_at - a.updated_at || b.created_at - a.created_at).slice(0, o.profileMax);
+    soul = kept.filter((r) => r.level === "soul");
+    user = kept.filter((r) => r.level === "user");
+  }
   const lines = [lbl3("inject.title"), ""];
   const injected = [];
   const pushEntries = (label, rows) => {
@@ -2013,6 +2033,8 @@ function buildInjectionBody(db, o) {
     lines.push("");
   }
   if (lines.length <= 2) return null;
+  lines.push(lbl3("inject.end"));
+  lines.push(lbl3("inject.boundary"));
   return { body: lines.join("\n").trimEnd(), injectedIds: injected };
 }
 function buildInjection(db, workspace, sessionId, _firstUserText = "", opts = {}, dir = ".dsh-meow") {
@@ -2096,7 +2118,8 @@ ${render(list)}`);
     "\u2014\u2014",
     "\u8BF4\u660E\uFF1A\u6B64\u5904\u53EA\u63D0\u4F9B active \u7684\u8BB0\u5FC6\u3002",
     `\u5982\u679C\u4F60\u60F3\u770B\u975E active \u6761\u76EE\uFF08archived=\u5220\u9664 / stale=\u5B8C\u7ED3\uFF09\uFF0C\u6216\u67D0\u6761\u8BB0\u5FC6\u7684\u5177\u4F53\u65F6\u95F4\u6233\uFF08\u8BB0\u5FC6\u65F6\u95F4\u6233=\u8BE5\u7A97\u53E3 dream \u5C01\u5B58\u65F6\u523B\uFF09\u3001\u8BB0\u5FC6\u6765\u6E90\uFF08source_session\uFF09\u3001\u91CD\u8981\u6027\u3001\u5173\u952E\u8BCD\u7B49\u5143\u6570\u636E\uFF0C\u53EF\u4EE5\u76F4\u63A5\u53BB\u641C\u8BB0\u5FC6\u5E93 SQLite\uFF1A${dbPath}`,
-    "\uFF08\u5E93\u5185\u7ED3\u6784\uFF1A\u4E03\u5C42\u8868 soul/user/project/fact/lesson/topic/rules\uFF0C\u5B57\u6BB5\u542B id/title/content/importance/keywords/status/corrected/project/subcategory/goal/source_session/created_at/updated_at\uFF08\u8BB0\u5FC6\u65F6\u95F4\u6233=\u6700\u540E\u66F4\u65B0\u65F6\u95F4\uFF09/last_accessed_at\uFF1B\u53E6\u6709 dream_log \u6574\u7406\u7559\u75D5\u8868\u3001windows \u7A97\u53E3\u65F6\u95F4\u8868\uFF1B\u4E5F\u53EF\u6309 id \u7528 memory_read \u770B\u5355\u6761\u5B8C\u6574\u5143\u6570\u636E\uFF09",
+    "\uFF08\u5E93\u5185\u7ED3\u6784\uFF1A\u4E03\u5C42\u8868 soul/user/project/fact/lesson/topic/rules\uFF0C\u5B57\u6BB5\u542B id/title/content/importance/keywords/status/corrected/project/subcategory/goal/source_session/created_at/updated_at\uFF08\u8BB0\u5FC6\u65F6\u95F4\u6233=\u6700\u540E\u66F4\u65B0\u65F6\u95F4\uFF09/last_accessed_at/editHistory_infoFrom\uFF1B\u53E6\u6709 dream_log \u6574\u7406\u7559\u75D5\u8868\u3001windows \u7A97\u53E3\u65F6\u95F4\u8868\uFF1B\u4E5F\u53EF\u6309 id \u7528 memory_read \u770B\u5355\u6761\u5B8C\u6574\u5143\u6570\u636E\uFF09",
+    'editHistory_infoFrom = \u7F16\u8F91\u53F2\uFF1A\u6BCF\u6B21\u7F16\u8F91\u8FFD\u52A0\u4E00\u6761\u4E8B\u4EF6\uFF08\u5206\u53F7\u5206\u9694\uFF09\uFF0C\u683C\u5F0F\u300C\u573A\u666F-\u52A8\u4F5C-\u4F1A\u8BDD\u77EDid-turn(n)\u300D\u6216\u300C\u573A\u666F-\u52A8\u4F5C-\u4F1A\u8BDD\u77EDid-turnRange(a,b)\u300D\u3002\u573A\u666F jot=\u968F\u624B\u8BB0/reflect=\u53CD\u601D/dream=\u6574\u7406\uFF1B\u52A8\u4F5C remember=memory_remember \u5199\u5165\uFF08\u65B0\u5EFA\u6216\u5408\u5E76\uFF09/update=memory_update \u6539\u5B57\u6BB5/archive=\u5F52\u6863/stale=\u5B8C\u7ED3\u3002turn(n)=\u7B2C n \u8F6E\u968F\u624B\u5199\u4E0B\u3001\u51FA\u5904\u5373\u8BE5\u8F6E\uFF1BturnRange(a,b)=\u7B2C b \u8F6E\uFF08\u53CD\u601D/dream \u5904\u7406\u8F6E\uFF09\u6574\u7406\u4E86\u7D20\u6750\u7B2C a \u5230 b-1 \u8F6E\uFF08\u542B\u5934\u4E0D\u542B\u5C3E\uFF0Cb \u672C\u8EAB\u4E0D\u662F\u7D20\u6750\uFF09\u3002\u4F1A\u8BDD\u77ED id=\u4F1A\u8BDD id \u5265 "session-" \u524D\u7F00\u53D6\u524D 8 \u4F4D\u3002',
     `\u5982\u679C\u4F60\u60F3\u4E86\u89E3\u672A\u88AB\u8BB0\u5F55\u7684\u66F4\u591A\u7EC6\u8282\uFF0C\u53EF\u4EE5\u76F4\u63A5\u53BB\u641C\u4F1A\u8BDD\u5386\u53F2\u76EE\u5F55\uFF08dsh \u7684 session \u65E5\u5FD7\uFF0C\u4F4D\u7F6E\u7531 DSH_HOME \u51B3\u5B9A\uFF0C\u9ED8\u8BA4 ~/.dsh/sessions\uFF0C\u55B5\u7248\u4E3A dsh-home/sessions\uFF09\uFF0C\u6309\u4F1A\u8BDD id \u67E5\u539F\u59CB\u8BB0\u5F55\u3002`
   ].join("\n");
   return { text, ids };
@@ -2159,6 +2182,7 @@ function buildReinjection(db, workspace, sessionId, projects, opts = {}, dir = "
     lines.push(written.text);
     lines.push("");
   }
+  lines.push(lbl2("inject.boundary"));
   const text = lines.join("\n").trimEnd();
   const replayedIds = [...snapshot?.injectedIds ?? [], ...written?.ids ?? []];
   if (replayedIds.length > 0) markInjected(workspace, sessionId, replayedIds, dir);
@@ -2202,6 +2226,7 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
     lines.push(h.content);
     lines.push("");
   }
+  lines.push(lbl2("inject.boundary"));
   const text = lines.join("\n").trimEnd();
   const ids = fresh.map((h) => h.id);
   markInjected(workspace, sessionId, ids, dir);
@@ -2210,7 +2235,116 @@ function buildHitInjection(db, workspace, sessionId, userText, opts = {}, dir = 
 }
 
 // src/tools.ts
+import { appendFileSync } from "node:fs";
+import { join as join7 } from "node:path";
+
+// src/reflect.ts
+import { createUserMessage } from "@deepseek-ai/dsh-llm";
+
+// src/source.ts
+var PLUGIN_NAME = "meow-memory";
+var PLUGIN_KIND = `plugin:${PLUGIN_NAME}`;
+var PLUGIN_SOURCE = { kind: PLUGIN_KIND };
+function isMeowSource(source) {
+  if (source === null || typeof source !== "object") return false;
+  const record = source;
+  if (record.kind === PLUGIN_KIND) return true;
+  return record.kind === "plugin" && record.plugin === PLUGIN_NAME;
+}
+
+// src/reflect.ts
+var REFLECT_MARKER = "[meow-memory-reflect]";
+function scanTurn(events) {
+  let startIdx = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e?.type === "turn/start") {
+      startIdx = i;
+      break;
+    }
+  }
+  let sawToolCall = false;
+  let lastToolName;
+  let sawReflect = false;
+  const texts = [];
+  for (let i = startIdx; i < events.length; i++) {
+    const e = events[i];
+    if (e?.type === "user/message") {
+      const src = e.data?.source;
+      const msgText = (e.data?.content ?? []).filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text ?? "").join(" ");
+      if (isMeowSource(src) && msgText.includes(REFLECT_MARKER)) {
+        sawReflect = true;
+      } else {
+        for (const b of e.data?.content ?? []) if (b.type === "text" && b.text) texts.push(b.text);
+      }
+    } else if (e?.type === "assistant/message") {
+      for (const block of e.data?.message?.content ?? []) {
+        if (block.type === "tool-call") {
+          sawToolCall = true;
+          lastToolName = block.name;
+        } else if (block.type === "text" && block.text) {
+          texts.push(block.text);
+        }
+      }
+    } else if (e?.type === "tool/ptc-dispatch") {
+      const name2 = e.data?.name;
+      if (typeof name2 === "string") {
+        sawToolCall = true;
+        lastToolName = name2;
+      }
+    }
+  }
+  return { sawToolCall, lastToolName, sawReflect, turnText: texts.join("\n").slice(-2e3) };
+}
+function consecutiveToolSteps(events) {
+  let startIdx = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i].type === "turn/start") {
+      startIdx = i;
+      break;
+    }
+  }
+  let best = 0;
+  let cur = 0;
+  for (let i = startIdx; i < events.length; i++) {
+    const e = events[i];
+    if (e?.type === "tool/ptc-dispatch") {
+      if (typeof e.data?.name === "string" && e.data.name.startsWith("memory_")) cur = 0;
+      continue;
+    }
+    if (e?.type !== "assistant/message") continue;
+    for (const b of e.data?.message?.content ?? []) {
+      if (b.type !== "tool-call" || typeof b.name !== "string") continue;
+      if (b.name.startsWith("memory_")) cur = 0;
+      else {
+        cur++;
+        if (cur > best) best = cur;
+      }
+    }
+  }
+  return best;
+}
+function buildReflectMessage(workspace, turnText, dir = ".dsh-meow") {
+  const db = getDb(workspace, dir);
+  const prompt = resolveSlotText("reflect", { projectList: projectNamesText(db.listProjectNames()) });
+  const text = `${REFLECT_MARKER} ${prompt}`;
+  return createUserMessage({ content: [{ type: "text", text }], source: PLUGIN_SOURCE });
+}
+function projectNamesText(projectNames) {
+  return projectNames.length > 0 ? projectNames.join(" / ") : keyedValue("labels", "reflect.noProjects");
+}
+
+// src/tools.ts
 var T = (key) => keyedValue("tools", key);
+function privacySuffix(privacy) {
+  if (!privacy) return "";
+  try {
+    return `
+${keyedValue("tools", "privacy.line")}`;
+  } catch {
+    return "";
+  }
+}
 var L = (key, params) => fillTemplate(keyedValue("labels", key), params);
 var toolGate;
 function setMemoryToolGate(gate) {
@@ -2316,10 +2450,107 @@ function similarity(a, b) {
   return inter / (sa.size + sb.size - inter);
 }
 var DEDUP_THRESHOLD = 0.8;
-function rememberTool(dir) {
+var editDiagLogged = false;
+function editUserTextOf(e) {
+  const content = e.data?.content;
+  if (!Array.isArray(content)) return "";
+  return content.map((b) => b?.type === "text" && typeof b.text === "string" ? b.text : "").join(" ");
+}
+function sessionEventsForEdit(session) {
+  const tryCall = (fn) => {
+    try {
+      return typeof fn === "function" ? fn.call(session) : void 0;
+    } catch {
+      return void 0;
+    }
+  };
+  const snap = tryCall(session?.snapshotEvents);
+  if (Array.isArray(snap) && snap.length > 0) return snap;
+  const own = tryCall(session?.ownEvents);
+  if (Array.isArray(own) && own.length > 0) return own;
+  const evs = session?.events;
+  if (Array.isArray(evs) && evs.length > 0) return evs;
+  return [];
+}
+function editShortIdOf(sid) {
+  return (sid.startsWith("session-") ? sid.slice(8) : sid).slice(0, 8);
+}
+function editContextOf(exec, workspace, dir) {
+  const header = exec.agent?.session?.header;
+  const sid = typeof header?.id === "string" && header.id.length > 0 ? header.id : null;
+  if (sid === null) return null;
+  const events = sessionEventsForEdit(exec.agent.session);
+  if (events.length === 0) {
+    if (!editDiagLogged) {
+      editDiagLogged = true;
+      const session = exec.agent?.session;
+      const probe = {
+        agent: exec.agent !== void 0,
+        session: session !== void 0,
+        headerId: typeof session?.header?.id === "string" ? "string" : typeof session?.header?.id,
+        cwd: typeof session?.header?.cwd,
+        snapshotEvents: typeof session?.snapshotEvents,
+        ownEvents: typeof session?.ownEvents,
+        events: typeof session?.events
+      };
+      const line = `[meow-memory] editHistory \u505C\u6B62\u8BB0\u5F55\uFF1A\u4F1A\u8BDD\u4E8B\u4EF6\u6D41\u4E0D\u53EF\u8BFB\uFF08\u6BCF\u8FDB\u7A0B\u4E00\u6B21\u6027\u8BCA\u65AD\uFF09probe=${JSON.stringify(probe)}`;
+      console.warn(line);
+      try {
+        if (workspace) appendFileSync(join7(workspace, dir, "edit-diag.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${line}
+`);
+      } catch {
+      }
+    }
+    return null;
+  }
+  let turn = 0;
+  let turnStartIdx = -1;
+  for (let i = 0; i < events.length; i++) {
+    if (events[i]?.type === "turn/start") {
+      turn++;
+      turnStartIdx = i;
+    }
+  }
+  let scenario = "jot";
+  for (let i = turnStartIdx + 1; i < events.length; i++) {
+    const text = editUserTextOf(events[i]);
+    if (text.includes(DREAM_MARKER)) {
+      scenario = "dream";
+      break;
+    }
+    if (text.includes(REFLECT_MARKER)) {
+      scenario = "reflect";
+      break;
+    }
+  }
+  let fromTurn = null;
+  if (scenario !== "jot") {
+    const marker = scenario === "dream" ? DREAM_MARKER : REFLECT_MARKER;
+    let markerTurn = 0;
+    let t = 0;
+    for (let i = 0; i < turnStartIdx; i++) {
+      if (events[i]?.type === "turn/start") {
+        t++;
+      } else if (editUserTextOf(events[i]).includes(marker)) markerTurn = t;
+    }
+    fromTurn = markerTurn + 1;
+  }
+  return { shortId: editShortIdOf(sid), turn: turn > 0 ? turn : 1, fromTurn, scenario };
+}
+function editEventOf(ctx, action) {
+  const loc = ctx.fromTurn !== null ? `turnRange(${ctx.fromTurn},${ctx.turn})` : `turn(${ctx.turn})`;
+  return `${ctx.scenario}-${action}-${ctx.shortId}-${loc}`;
+}
+function appendEditEvent(existing, event) {
+  const events = typeof existing === "string" && existing.trim().length > 0 ? existing.split("; ") : [];
+  events.push(event);
+  if (events.length > 10) return [events[0], ...events.slice(-9)].join("; ");
+  return events.join("; ");
+}
+function rememberTool(dir, privacy) {
   return {
     name: "memory_remember",
-    description: T("memory_remember.description"),
+    description: T("memory_remember.description") + privacySuffix(privacy),
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -2385,10 +2616,11 @@ function rememberTool(dir) {
       const goal = typeof parsed.goal === "string" && parsed.goal.trim() ? parsed.goal.trim() : null;
       const corrected = coerceBoolean(parsed.corrected) ? 1 : 0;
       const workspace = workspaceOf(exec);
-      if (!workspace) throw new Error("memory_remember: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09");
+      if (!workspace) throw new Error("memory_remember: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       const db = getDb(workspace, dir);
       const source_session = sessionIdOf(exec);
       if (project && !isGlobalProject(project) && !project.includes(",")) setCurrentProject(workspace, source_session ?? "unknown", project, dir);
+      const editCtx = editContextOf(exec, workspace, dir);
       const existing = db.list(level, { status: "active" });
       let merged;
       for (const r of existing) {
@@ -2407,6 +2639,7 @@ function rememberTool(dir) {
         if (goal && level === "topic") patch.goal = goal;
         if (level === "lesson" && corrected) patch.corrected = 1;
         patch.keywords = keywords;
+        if (editCtx) patch.editHistory = appendEditEvent(merged.editHistory_infoFrom, editEventOf(editCtx, "remember"));
         db.update(level, merged.id, patch);
         markWritten(workspace, source_session ?? "unknown", [merged.id], dir);
         const after = db.findById(merged.id)?.row;
@@ -2428,7 +2661,9 @@ function rememberTool(dir) {
         importance,
         corrected,
         keywords,
-        source_session
+        source_session,
+        // editHistory（建议三）：出生事件（拿不到坐标则整列 null）
+        ...editCtx ? { editHistory_infoFrom: editEventOf(editCtx, "remember") } : {}
       });
       markWritten(workspace, source_session ?? "unknown", [row.id], dir);
       return {
@@ -2528,7 +2763,7 @@ function searchTool(dir) {
       const query = typeof parsed.query === "string" ? parsed.query.trim() : "";
       if (!query) throw new Error('memory_search: query \u5FC5\u586B\u4E14\u4E0D\u80FD\u4E3A\u7A7A\uFF08\u4F8B\uFF1A{"query": "\u5173\u952E\u8BCD"}\uFF09\uFF1B\u6D4F\u89C8\u9879\u76EE\u5168\u8C8C\u8BF7\u7528 memory_project');
       const workspace = workspaceOf(exec);
-      if (!workspace) throw new Error("memory_search: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09");
+      if (!workspace) throw new Error("memory_search: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       const db = getDb(workspace, dir);
       const sessionId = sessionIdOf(exec);
       const seen = readSeen(workspace, sessionId ?? "unknown", dir);
@@ -2664,7 +2899,7 @@ function findSimilarTool(dir) {
       const id = typeof parsed.id === "string" ? parsed.id.trim() : "";
       if (!id) throw new Error("memory_find_similar: id \u4E0D\u80FD\u4E3A\u7A7A");
       const workspace = workspaceOf(exec);
-      if (!workspace) throw new Error("memory_find_similar: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09");
+      if (!workspace) throw new Error("memory_find_similar: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       const db = getDb(workspace, dir);
       const found = db.findById(id);
       if (!found) throw new Error(`memory_find_similar: \u672A\u627E\u5230\u8BB0\u5FC6 ${id.slice(0, 12)}`);
@@ -2736,7 +2971,8 @@ function readTool(dir) {
           goal: { type: "string" },
           corrected: { type: "boolean" },
           created_at: { type: "number" },
-          updated_at: { type: "number" }
+          updated_at: { type: "number" },
+          editHistory_infoFrom: { type: "string" }
         }
       },
       render: (_args, value) => {
@@ -2746,6 +2982,7 @@ function readTool(dir) {
         const parts = [`[${String(v.level ?? "")}] ${String(v.title ?? "")}\uFF08${String(v.status ?? "")}\uFF09`];
         if (v.project) parts.push(`\u9879\u76EE\uFF1A${String(v.project)}`);
         if (v.goal) parts.push(`\u76EE\u6807\uFF1A${String(v.goal)}`);
+        if (typeof v.editHistory_infoFrom === "string" && v.editHistory_infoFrom.length > 0) parts.push(`editHistory: ${v.editHistory_infoFrom}`);
         parts.push(String(v.content ?? ""));
         parts.push(hint);
         return [{ type: "text", text: parts.join("\n") }];
@@ -2757,7 +2994,7 @@ function readTool(dir) {
       const id = typeof parsed.id === "string" ? parsed.id.trim() : "";
       if (!id) throw new Error("memory_read: id \u4E0D\u80FD\u4E3A\u7A7A");
       const workspace = workspaceOf(exec);
-      if (!workspace) throw new Error("memory_read: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09");
+      if (!workspace) throw new Error("memory_read: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       const found = getDb(workspace, dir).findById(id);
       if (!found) return { found: false };
       const { row } = found;
@@ -2775,7 +3012,8 @@ function readTool(dir) {
         goal: row.goal ?? "",
         corrected: row.corrected === 1,
         created_at: row.created_at,
-        updated_at: row.updated_at
+        updated_at: row.updated_at,
+        ...row.editHistory_infoFrom ? { editHistory_infoFrom: row.editHistory_infoFrom } : {}
       };
     },
     presentCall(args) {
@@ -2784,10 +3022,10 @@ function readTool(dir) {
     }
   };
 }
-function updateTool(dir) {
+function updateTool(dir, privacy) {
   return {
     name: "memory_update",
-    description: T("memory_update.description"),
+    description: T("memory_update.description") + privacySuffix(privacy),
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -2824,7 +3062,7 @@ function updateTool(dir) {
       const id = typeof parsed.id === "string" ? parsed.id.trim() : "";
       if (!id) throw new Error("memory_update: id \u4E0D\u80FD\u4E3A\u7A7A");
       const workspace = workspaceOf(exec);
-      if (!workspace) throw new Error("memory_update: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09");
+      if (!workspace) throw new Error("memory_update: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       const db = getDb(workspace, dir);
       const sessionId = sessionIdOf(exec);
       const matches = db.findByIdAll(id);
@@ -2848,6 +3086,11 @@ function updateTool(dir) {
       {
         const kw = normalizeKeywords(parsed.keywords);
         if (kw.length > 0) patch.keywords = kw;
+      }
+      const editCtx = editContextOf(exec, workspace, dir);
+      if (editCtx && Object.keys(patch).length > 0) {
+        const action = patch.status === "archived" ? "archive" : patch.status === "stale" ? "stale" : "update";
+        patch.editHistory = appendEditEvent(found.row.editHistory_infoFrom, editEventOf(editCtx, action));
       }
       const ok = Object.keys(patch).length > 0 ? db.update(found.level, found.row.id, patch) : true;
       if (ok && Object.keys(patch).length > 0) markWritten(workspace, sessionId ?? "unknown", [found.row.id], dir);
@@ -2892,7 +3135,7 @@ function projectTool(dir) {
       const project = typeof parsed.project === "string" ? parsed.project.trim() : "";
       if (!project) throw new Error("memory_project: project \u4E0D\u80FD\u4E3A\u7A7A");
       const workspace = workspaceOf(exec);
-      if (!workspace) throw new Error("memory_project: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09");
+      if (!workspace) throw new Error("memory_project: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       const db = getDb(workspace, dir);
       const sessionId = sessionIdOf(exec);
       if (!isGlobalProject(project) && !project.includes(",")) setCurrentProject(workspace, sessionId ?? "unknown", project, dir);
@@ -2960,25 +3203,14 @@ function homeTool() {
     }
   };
 }
-function registerMemoryTools(register, dir = ".dsh-meow") {
-  register(rememberTool(dir));
+function registerMemoryTools(register, dir = ".dsh-meow", opts = {}) {
+  register(rememberTool(dir, opts.privacy === true));
   register(searchTool(dir));
   register(findSimilarTool(dir));
   register(readTool(dir));
-  register(updateTool(dir));
+  register(updateTool(dir, opts.privacy === true));
   register(projectTool(dir));
   register(homeTool());
-}
-
-// src/source.ts
-var PLUGIN_NAME = "meow-memory";
-var PLUGIN_KIND = `plugin:${PLUGIN_NAME}`;
-var PLUGIN_SOURCE = { kind: PLUGIN_KIND };
-function isMeowSource(source) {
-  if (source === null || typeof source !== "object") return false;
-  const record = source;
-  if (record.kind === PLUGIN_KIND) return true;
-  return record.kind === "plugin" && record.plugin === PLUGIN_NAME;
 }
 
 // src/dream.ts
@@ -2988,7 +3220,7 @@ function shortSessionId(sid) {
 }
 function dreamLog(ws, dir, msg) {
   try {
-    appendFileSync(join7(ws, dir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
+    appendFileSync2(join8(ws, dir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
 `);
   } catch {
   }
@@ -3079,11 +3311,14 @@ ${lbl3("dream.topic.empty")}` : `
 ${groupsText}`;
     lines.push(...resolveSlotText(round.kind === "topic" ? "dream-topic" : "dream-atomic", { list: listBlock, groupMarker }).split("\n"));
   }
-  return createUserMessage({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
+  return createUserMessage2({ content: [{ type: "text", text: lines.join("\n") }], source: PLUGIN_SOURCE });
 }
 var DREAM_LEASE_MS = 30 * 6e4;
 var DREAM_MAX_ATTEMPTS = 3;
 var liveAgents = /* @__PURE__ */ new Map();
+function getLiveAgent(sessionId) {
+  return liveAgents.get(sessionId);
+}
 function registerLiveAgent(agent) {
   const id = agent.session?.header?.id;
   if (typeof id === "string" && id.length > 0) liveAgents.set(id, agent);
@@ -3112,11 +3347,17 @@ function safeSteer(agent, msg, workspace, dir, tag) {
     return false;
   }
 }
+var memoryTurnEnqueuedHook;
+function setMemoryTurnEnqueuedHook(fn) {
+  memoryTurnEnqueuedHook = fn;
+}
+var setMemoryTurnEnqueuedHookForTest = setMemoryTurnEnqueuedHook;
 function sendMemoryTurn(agent, msg, workspace, dir, tag) {
   const followup = agent?.followup;
   if (typeof followup !== "function") return safeSteer(agent, msg, workspace, dir, tag);
   try {
     followup.call(agent, msg);
+    memoryTurnEnqueuedHook?.(agent);
     return true;
   } catch (error) {
     const text = error instanceof Error ? error.message : String(error);
@@ -3259,7 +3500,7 @@ function dreamTool(ctx, dir = ".dsh-meow", onDreamState, rulesReviewDays = DEFAU
     },
     async execute(_args, exec) {
       const workspace = workspaceOf(exec);
-      if (!workspace) throw new Error("memory_dream: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09");
+      if (!workspace) throw new Error("memory_dream: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       if (!exec.agent) throw new Error("memory_dream: \u65E0\u6CD5\u786E\u5B9A\u5F53\u524D agent");
       if (isSubagentAgent(exec.agent)) {
         return { ok: false, note: "\u5F53\u524D\u662F\u5B50\u4EE3\u7406\u4F1A\u8BDD\uFF0C\u6CA1\u6709\u72EC\u7ACB\u7684\u8BB0\u5FC6\u7A97\u53E3\uFF1B\u8BB0\u5FC6\u6574\u7406\u5F52\u7236\u7A97\u53E3\u8D1F\u8D23\uFF0C\u65E0\u9700\uFF08\u4E5F\u4E0D\u80FD\uFF09\u5728\u6B64\u89E6\u53D1 dream\u3002" };
@@ -3401,9 +3642,9 @@ function isDreamSuppressed(cfg, date = /* @__PURE__ */ new Date()) {
 }
 function readLastRouteFromSessionLog(sessionId) {
   if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) return null;
-  const home = process.env.DSH_HOME || join7(homedir3(), ".dsh");
+  const home = process.env.DSH_HOME || join8(homedir3(), ".dsh");
   for (const rootName of ["sessions", "archived-sessions"]) {
-    const root = join7(home, rootName);
+    const root = join8(home, rootName);
     let projDirs;
     try {
       if (!existsSync6(root)) continue;
@@ -3412,7 +3653,7 @@ function readLastRouteFromSessionLog(sessionId) {
       continue;
     }
     for (const proj of projDirs) {
-      for (const file of [join7(root, proj, sessionId, "session.v4.jsonl.zstd"), join7(root, proj, sessionId, "session.jsonl.zstd")]) {
+      for (const file of [join8(root, proj, sessionId, "session.v4.jsonl.zstd"), join8(root, proj, sessionId, "session.jsonl.zstd")]) {
         if (!existsSync6(file)) continue;
         try {
           const lines = decompressAllFrames(readFileSync6(file)).toString("utf8").split("\n");
@@ -3638,7 +3879,7 @@ function noteActivity() {
 
 // src/migrate.ts
 import { existsSync as existsSync7, readFileSync as readFileSync7, renameSync as renameSync5 } from "node:fs";
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 var CATEGORY_TO_LEVEL = {
   fact: { level: "fact" },
   mistake: { level: "lesson", corrected: 1 },
@@ -3708,7 +3949,7 @@ function splitCoreLine(line) {
   return /ai|模型|我应该|作为|身份|自我|soul/i.test(line) ? "soul" : "user";
 }
 function migrateLegacy(db, workspace, dir = ".dsh-meow") {
-  const projectFile = join8(workspace, dir, "PROJECT.md");
+  const projectFile = join9(workspace, dir, "PROJECT.md");
   if (!db.isFresh() || !existsSync7(projectFile)) return null;
   const text = readFileSync7(projectFile, "utf8");
   const { core, entries } = parseLegacy(text);
@@ -3739,89 +3980,6 @@ function migrateLegacy(db, workspace, dir = ".dsh-meow") {
   } catch {
   }
   return imported;
-}
-
-// src/reflect.ts
-import { createUserMessage as createUserMessage2 } from "@deepseek-ai/dsh-llm";
-var REFLECT_MARKER = "[meow-memory-reflect]";
-function scanTurn(events) {
-  let startIdx = 0;
-  for (let i = events.length - 1; i >= 0; i--) {
-    const e = events[i];
-    if (e?.type === "turn/start") {
-      startIdx = i;
-      break;
-    }
-  }
-  let sawToolCall = false;
-  let lastToolName;
-  let sawReflect = false;
-  const texts = [];
-  for (let i = startIdx; i < events.length; i++) {
-    const e = events[i];
-    if (e?.type === "user/message") {
-      const src = e.data?.source;
-      const msgText = (e.data?.content ?? []).filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text ?? "").join(" ");
-      if (isMeowSource(src) && msgText.includes(REFLECT_MARKER)) {
-        sawReflect = true;
-      } else {
-        for (const b of e.data?.content ?? []) if (b.type === "text" && b.text) texts.push(b.text);
-      }
-    } else if (e?.type === "assistant/message") {
-      for (const block of e.data?.message?.content ?? []) {
-        if (block.type === "tool-call") {
-          sawToolCall = true;
-          lastToolName = block.name;
-        } else if (block.type === "text" && block.text) {
-          texts.push(block.text);
-        }
-      }
-    } else if (e?.type === "tool/ptc-dispatch") {
-      const name2 = e.data?.name;
-      if (typeof name2 === "string") {
-        sawToolCall = true;
-        lastToolName = name2;
-      }
-    }
-  }
-  return { sawToolCall, lastToolName, sawReflect, turnText: texts.join("\n").slice(-2e3) };
-}
-function consecutiveToolSteps(events) {
-  let startIdx = 0;
-  for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === "turn/start") {
-      startIdx = i;
-      break;
-    }
-  }
-  let best = 0;
-  let cur = 0;
-  for (let i = startIdx; i < events.length; i++) {
-    const e = events[i];
-    if (e?.type === "tool/ptc-dispatch") {
-      if (typeof e.data?.name === "string" && e.data.name.startsWith("memory_")) cur = 0;
-      continue;
-    }
-    if (e?.type !== "assistant/message") continue;
-    for (const b of e.data?.message?.content ?? []) {
-      if (b.type !== "tool-call" || typeof b.name !== "string") continue;
-      if (b.name.startsWith("memory_")) cur = 0;
-      else {
-        cur++;
-        if (cur > best) best = cur;
-      }
-    }
-  }
-  return best;
-}
-function buildReflectMessage(workspace, turnText, dir = ".dsh-meow") {
-  const db = getDb(workspace, dir);
-  const prompt = resolveSlotText("reflect", { projectList: projectNamesText(db.listProjectNames()) });
-  const text = `${REFLECT_MARKER} ${prompt}`;
-  return createUserMessage2({ content: [{ type: "text", text }], source: PLUGIN_SOURCE });
-}
-function projectNamesText(projectNames) {
-  return projectNames.length > 0 ? projectNames.join(" / ") : keyedValue("labels", "reflect.noProjects");
 }
 
 // src/auth-gate.ts
@@ -4076,9 +4234,9 @@ var perfBoot = Date.now();
 var lastPerfLog = Date.now();
 function perf(msg) {
   try {
-    const file = join9(activeHomeDir(), "perf.log");
+    const file = join10(activeHomeDir(), "perf.log");
     mkdirSync6(dirname6(file), { recursive: true });
-    appendFileSync2(file, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
+    appendFileSync3(file, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
 `);
   } catch {
   }
@@ -4101,7 +4259,7 @@ function sweepHomeLogs(dir = activeHomeDir(), now = Date.now()) {
   for (const name2 of HOME_LOGS) {
     if (!name2.endsWith(".log")) continue;
     try {
-      const file = join9(dir, name2);
+      const file = join10(dir, name2);
       if (statSync3(file).mtimeMs < cutoff) {
         unlinkSync(file);
         swept.push(name2);
@@ -4111,9 +4269,9 @@ function sweepHomeLogs(dir = activeHomeDir(), now = Date.now()) {
   }
   let rotated = false;
   try {
-    const cur = join9(dir, "perf.log");
+    const cur = join10(dir, "perf.log");
     if (statSync3(cur).size > PERF_LOG_ROTATE_BYTES) {
-      renameSync6(cur, join9(dir, "perf.log.old"));
+      renameSync6(cur, join10(dir, "perf.log.old"));
       rotated = true;
     }
   } catch {
@@ -4150,6 +4308,10 @@ var config = z.object({
   hitTopK: z.number().min(0).max(10).default(2),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
+  /** 首轮画像条数上限（soul+user 合并池按 importance 降序、同重要性按更新时间新→旧
+   *  截 top N；0=全量默认，现状不变）。只作用于画像层：rules 区不受影响（已有
+   *  全局+importance≥2 双门槛）。被截条目仍可用 memory_search 显式 level 检索。 */
+  profileMax: z.number().min(0).max(500).default(0),
   /** 是否在 ReAct 任务结束后自动注入反思。 */
   reflect: z.boolean().default(true),
   /** 单任务内连续工具 step 达到该值才在结束时触发反思（用户拍板：react ≥7 轮）。 */
@@ -4187,6 +4349,13 @@ var config = z.object({
   backup: z.object({
     enabled: z.boolean().default(false)
   }).default({}),
+  /** 隐私倾向（默认关=记忆如实记录）：开启后在 memory_remember / memory_update 的
+   *  工具描述中追加红线句，要求模型不记录密钥/Token 等敏感信息原文。prompt 级约束
+   *  （模型可能不听、认不出的凭据形态照样漏），不是写入闸门——取舍由设置页 hint 向
+   *  用户说明。注册期消费，改动需重载。 */
+  privacy: z.object({
+    enabled: z.boolean().default(false)
+  }).default({}),
   /** 整理任务的模型（可选换模型）。反思/梦境永远在主窗口执行（steer）——配置了
    *  model 时仅在这两类轮的请求上经 agent/request waterfall 覆盖 provider/model，
    *  轮次结束自动换回主模型；不再提供"独立执行"开关（v0.24 移除）。 */
@@ -4219,6 +4388,7 @@ function validateConfigUserLayer(value) {
   reqStr("homeDir");
   reqNum("hitTopK");
   reqNum("titleMax");
+  reqNum("profileMax");
   reqBool("reflect");
   reqNum("reflectTurns");
   reqBool("autoMigrate");
@@ -4250,6 +4420,12 @@ function validateConfigUserLayer(value) {
     const ddg = dg;
     if (ddg.model !== void 0 && typeof ddg.model !== "string") throw new Error("delegate.model \u5FC5\u987B\u662F\u5B57\u7B26\u4E32");
     if (ddg.effort !== void 0 && typeof ddg.effort !== "string") throw new Error("delegate.effort \u5FC5\u987B\u662F\u5B57\u7B26\u4E32");
+  }
+  const pv = v.privacy;
+  if (pv !== void 0) {
+    if (pv === null || typeof pv !== "object" || Array.isArray(pv)) throw new Error("privacy \u5FC5\u987B\u662F\u5BF9\u8C61");
+    const pvp = pv;
+    if (pvp.enabled !== void 0 && typeof pvp.enabled !== "boolean") throw new Error("privacy.enabled \u5FC5\u987B\u662F\u5E03\u5C14\u503C");
   }
   if (v.projectDir !== void 0) {
     if (v.projectDir === null || typeof v.projectDir !== "string") throw new Error("projectDir \u5FC5\u987B\u662F\u5B57\u7B26\u4E32");
@@ -4307,12 +4483,15 @@ function resolveConfig(config2) {
   const d = c.dream ?? {};
   const dg = c.delegate ?? {};
   const bk = c.backup ?? {};
+  const pv = c.privacy ?? {};
   return {
     enabled: c.enabled ?? true,
     projectDir: normalizeProjectDir(c.projectDir),
     homeDir: typeof c.homeDir === "string" ? c.homeDir : void 0,
     hitTopK: c.hitTopK ?? 2,
     titleMax: c.titleMax ?? 40,
+    // 手编 settings.yaml 不经 zod/设置页校验——这里兜底防御（非有限数字/负数回落全量）。
+    profileMax: typeof c.profileMax === "number" && Number.isFinite(c.profileMax) ? Math.max(0, Math.round(c.profileMax)) : 0,
     reflect: c.reflect ?? true,
     reflectTurns: c.reflectTurns ?? 7,
     autoMigrate: c.autoMigrate ?? true,
@@ -4333,6 +4512,9 @@ function resolveConfig(config2) {
     disabledWorkspaces: Array.isArray(c.disabledWorkspaces) ? c.disabledWorkspaces.map((p) => String(p).trim()).filter((p) => p.length > 0) : [],
     backup: {
       enabled: bk.enabled ?? false
+    },
+    privacy: {
+      enabled: pv.enabled ?? false
     }
   };
 }
@@ -4402,14 +4584,30 @@ function lastTurnEndReason(events) {
   }
   return null;
 }
+function lastTurnErrorInfo(events) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e?.type === "turn/start") break;
+    if (e?.type === "turn/end" && e.data?.reason?.kind === "error") {
+      return {
+        code: String(e.data.reason.error?.code ?? ""),
+        message: String(e.data.reason.error?.message ?? "")
+      };
+    }
+  }
+  return null;
+}
+function isContextWindowError(code, message) {
+  return code === "CONTEXT_WINDOW_EXCEEDED" || /contextwindow|context window|egress_window_fuse|body itself exceeds|outbound body measures/i.test(message);
+}
 async function apply(ctx, config2) {
   try {
     return await applyInner(ctx, config2);
   } catch (e) {
     try {
-      const errFile = join9(activeHomeDir(), "apply-error.log");
+      const errFile = join10(activeHomeDir(), "apply-error.log");
       mkdirSync6(dirname6(errFile), { recursive: true });
-      appendFileSync2(errFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${e instanceof Error ? e.stack ?? e.message : String(e)}
+      appendFileSync3(errFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${e instanceof Error ? e.stack ?? e.message : String(e)}
 `);
     } catch {
     }
@@ -4533,8 +4731,8 @@ async function applyInner(ctx, config2) {
   const settingsBase = { ...mergeConfigLayer(CONFIG_DEFAULTS, config2), homeDirPresets: homeDirPresets() };
   let settingsGet;
   let markSourceReady;
-  const sourceReady = new Promise((resolve2) => {
-    markSourceReady = resolve2;
+  const sourceReady = new Promise((resolve3) => {
+    markSourceReady = resolve3;
   });
   let sourceWaitArmed = false;
   let resolvedView;
@@ -4555,9 +4753,9 @@ async function applyInner(ctx, config2) {
             if (result instanceof Promise) {
               return result.catch((e) => {
                 try {
-                  const diagFile = join9(activeHomeDir(), "settings-diag.log");
+                  const diagFile = join10(activeHomeDir(), "settings-diag.log");
                   mkdirSync6(dirname6(diagFile), { recursive: true });
-                  appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
+                  appendFileSync3(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e)}
 `);
                 } catch {
@@ -4583,9 +4781,9 @@ ${e.stack ?? ""}` : String(e)}
               configRaw: o.options?.config ?? null
             };
           });
-          const diagFile2 = join9(activeHomeDir(), "settings-diag.log");
+          const diagFile2 = join10(activeHomeDir(), "settings-diag.log");
           mkdirSync6(dirname6(diagFile2), { recursive: true });
-          appendFileSync2(diagFile2, `[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
+          appendFileSync3(diagFile2, `[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
 `);
         }
         if (typeof ce.edit === "function" && ce.__editProbe !== true) {
@@ -4595,9 +4793,9 @@ ${e.stack ?? ""}` : String(e)}
           ce.edit = async function(entry, change) {
             const result = await origEdit(entry, change).catch((e) => {
               try {
-                const f = join9(activeHomeDir(), "settings-diag.log");
+                const f = join10(activeHomeDir(), "settings-diag.log");
                 mkdirSync6(dirname6(f), { recursive: true });
-                appendFileSync2(f, `[${(/* @__PURE__ */ new Date()).toISOString()}] edit THREW ns=${String(entry?.options?.id)}: ${e instanceof Error ? `${e.message}
+                appendFileSync3(f, `[${(/* @__PURE__ */ new Date()).toISOString()}] edit THREW ns=${String(entry?.options?.id)}: ${e instanceof Error ? `${e.message}
 ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
 `);
               } catch {
@@ -4605,9 +4803,9 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
               throw e;
             });
             try {
-              const f = join9(activeHomeDir(), "settings-diag.log");
+              const f = join10(activeHomeDir(), "settings-diag.log");
               mkdirSync6(dirname6(f), { recursive: true });
-              appendFileSync2(f, `[${(/* @__PURE__ */ new Date()).toISOString()}] edit OK ns=${String(entry?.options?.id)}
+              appendFileSync3(f, `[${(/* @__PURE__ */ new Date()).toISOString()}] edit OK ns=${String(entry?.options?.id)}
 `);
             } catch {
             }
@@ -4622,7 +4820,7 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
           const dumpDescribe = () => {
             try {
               const view = svcAny.describe();
-              const diagFile = join9(activeHomeDir(), "settings-diag.log");
+              const diagFile = join10(activeHomeDir(), "settings-diag.log");
               mkdirSync6(dirname6(diagFile), { recursive: true });
               const info = {
                 isArray: Array.isArray(view),
@@ -4630,11 +4828,11 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
                 length: Array.isArray(view) ? view.length : null,
                 nsList: Array.isArray(view) ? view.map((row) => row?.ns) : null
               };
-              appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] describe shape: ${JSON.stringify(info)}
+              appendFileSync3(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] describe shape: ${JSON.stringify(info)}
 `);
               const meowRow = Array.isArray(view) ? view.find((row) => row?.ns === "meow-memory") : void 0;
               if (meowRow !== void 0) {
-                appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] meow view: ${JSON.stringify({
+                appendFileSync3(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] meow view: ${JSON.stringify({
                   revision: meowRow.revision,
                   value: meowRow.value,
                   base: meowRow.base,
@@ -4643,7 +4841,7 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
 `);
                 const schemaObj = meowRow.schema;
                 const schemaKeys = schemaObj && typeof schemaObj === "object" ? Object.keys(schemaObj) : null;
-                appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] meow schema: ${JSON.stringify({
+                appendFileSync3(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] meow schema: ${JSON.stringify({
                   schemaKeys,
                   homeDirDeclared: schemaKeys !== null && schemaKeys.includes("homeDir"),
                   schemaFull: JSON.stringify(schemaObj).slice(0, 3e3)
@@ -4652,7 +4850,7 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
               }
             } catch (e) {
               try {
-                appendFileSync2(join9(activeHomeDir(), "settings-diag.log"), `describe dump err: ${String(e)}
+                appendFileSync3(join10(activeHomeDir(), "settings-diag.log"), `describe dump err: ${String(e)}
 `);
               } catch {
               }
@@ -4734,9 +4932,9 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
     const msg = `meow-memory: \u8BBE\u7F6E\u547D\u540D\u7A7A\u95F4\u6CE8\u518C\u5931\u8D25\uFF08\u6807\u7B7E\u9875\u4E0D\u53EF\u7528\uFF0C\u914D\u7F6E\u8D70 patch \u5C42\uFF09\uFF1A${e instanceof Error ? e.stack ?? e.message : String(e)}`;
     ctx.logger.warn(msg);
     try {
-      const regErrFile = join9(activeHomeDir(), "settings-register-error.log");
+      const regErrFile = join10(activeHomeDir(), "settings-register-error.log");
       mkdirSync6(dirname6(regErrFile), { recursive: true });
-      appendFileSync2(regErrFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
+      appendFileSync3(regErrFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${msg}
 `);
     } catch {
     }
@@ -4750,9 +4948,9 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
           parent: entry.parent?.tree?.ctx?.fiber?.entry?.id ?? null,
           hasConfig: entry.fiber?.runtime !== void 0 && "Config" in entry.fiber.runtime
         }));
-        const diagFile = join9(activeHomeDir(), "settings-diag.log");
+        const diagFile = join10(activeHomeDir(), "settings-diag.log");
         mkdirSync6(dirname6(diagFile), { recursive: true });
-        appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
+        appendFileSync3(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] configEditor entries: ${JSON.stringify(rows)}
 `);
       } catch {
       }
@@ -4770,9 +4968,9 @@ ${String(e.stack).split("\n").slice(1, 4).join("\n")}` : String(e)}
         if (result instanceof Promise) {
           return result.catch((e) => {
             try {
-              const diagFile = join9(activeHomeDir(), "settings-diag.log");
+              const diagFile = join10(activeHomeDir(), "settings-diag.log");
               mkdirSync6(dirname6(diagFile), { recursive: true });
-              appendFileSync2(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
+              appendFileSync3(diagFile, `[${(/* @__PURE__ */ new Date()).toISOString()}] write(ns=${String(args[0])}) rejected: ${e instanceof Error ? `${e.message}
 ${e.stack ?? ""}` : String(e)}
 `);
             } catch {
@@ -4788,8 +4986,8 @@ ${e.stack ?? ""}` : String(e)}
   if (sourceWaitArmed) {
     await Promise.race([
       sourceReady,
-      new Promise((resolve2) => {
-        setTimeout(resolve2, SETTINGS_SOURCE_WAIT_MS);
+      new Promise((resolve3) => {
+        setTimeout(resolve3, SETTINGS_SOURCE_WAIT_MS);
       })
     ]);
   }
@@ -4852,7 +5050,7 @@ ${e.stack ?? ""}` : String(e)}
   registerMemoryTools((t) => {
     const dispose = ctx.tools.register(t);
     if (typeof dispose === "function") toolDisposers.push(dispose);
-  }, resolved.projectDir);
+  }, resolved.projectDir, { privacy: resolved.privacy.enabled });
   const broadcast = new DreamStateBroadcast(ctx.logger);
   const signalDreamState = (sessionId, state) => {
     broadcast.broadcast(sessionId, state);
@@ -4942,10 +5140,20 @@ ${e.stack ?? ""}` : String(e)}
         if ((pluginTurn || nakedTurn) && typeof cwd === "string" && existsSync9(memoryDbPath(cwd, resolved.projectDir))) {
           const errCode = String(event.data?.reason?.error?.code ?? "");
           const errMsg = String(event.data?.reason?.error?.message ?? "");
-          if (errCode === "TRANSPORT" || /transport|network|connection|ECONN/i.test(errMsg)) {
+          const cwFail = isContextWindowError(errCode, errMsg);
+          if (errCode === "TRANSPORT" || !cwFail && /transport|network|connection|ECONN/i.test(errMsg)) {
             try {
               getDb(cwd, resolved.projectDir).releaseDream(sid);
-              appendFileSync2(join9(cwd, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] dream transport-fail sid=${shortSessionId(sid)} -> released (not counted, #106)
+              appendFileSync3(join10(cwd, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] dream transport-fail sid=${shortSessionId(sid)} -> released (not counted, #106)
+`);
+            } catch {
+            }
+            broadcast.broadcast(sid, "active");
+          } else if (cwFail) {
+            const restored = restoreMainModelFor(sid);
+            const outcome = handleMemoryTurnFailure(getDb(cwd, resolved.projectDir), sid, cwd, resolved.projectDir);
+            try {
+              appendFileSync3(join10(cwd, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] dream context-window-fail sid=${shortSessionId(sid)} restored=${restored} outcome=${outcome} (#118)
 `);
             } catch {
             }
@@ -5015,7 +5223,8 @@ ${e.stack ?? ""}` : String(e)}
       const db = getDb(ws, resolved.projectDir);
       const reinj = buildReinjection(db, ws, sid, readProjectQueried(ws, sid, resolved.projectDir), {
         hitTopK: resolved.hitTopK,
-        titleMax: resolved.titleMax
+        titleMax: resolved.titleMax,
+        profileMax: resolved.profileMax
       }, resolved.projectDir);
       clearReinjectPending(ws, sid, resolved.projectDir);
       if (reinj !== null) {
@@ -5035,7 +5244,7 @@ ${e.stack ?? ""}` : String(e)}
       }
       if (ws) {
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] pre-step first pid=${process.pid} sid=${shortSessionId(sid)} priorUser=${priorUser} userMsgs=${userMsgs.length}
+          appendFileSync3(join10(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] pre-step first pid=${process.pid} sid=${shortSessionId(sid)} priorUser=${priorUser} userMsgs=${userMsgs.length}
 `);
         } catch {
         }
@@ -5044,14 +5253,15 @@ ${e.stack ?? ""}` : String(e)}
         if (ws) {
           const firstUser = userMsgs[0];
           const db = getDb(ws, resolved.projectDir);
-          if (resolved.autoMigrate && existsSync9(join9(ws, resolved.projectDir, "PROJECT.md"))) {
+          if (resolved.autoMigrate && existsSync9(join10(ws, resolved.projectDir, "PROJECT.md"))) {
             const n = migrateLegacy(db, ws, resolved.projectDir);
             if (n !== null) ctx.logger.info(`meow-memory: migrated legacy PROJECT.md \u2192 SQLite (${n} entries)`);
           }
           const firstText = firstUser.content.filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text ?? "").join(" ");
           const injected = buildInjection(db, ws, sid, firstText, {
             hitTopK: resolved.hitTopK,
-            titleMax: resolved.titleMax
+            titleMax: resolved.titleMax,
+            profileMax: resolved.profileMax
           }, resolved.projectDir);
           if (injected) {
             const rewritten = [...decision.messages];
@@ -5064,7 +5274,7 @@ ${e.stack ?? ""}` : String(e)}
           if (getDb(ws, resolved.projectDir).isFresh() && !readSeen(ws, sid, resolved.projectDir).has(FIRST_CREATE_NOTICE_SEEN_ID)) {
             const firstUser2 = userMsgs[0];
             markAccessed(ws, sid, [FIRST_CREATE_NOTICE_SEEN_ID], resolved.projectDir);
-            const notice = resolveSlotText("first-create-notice", { dbPath: join9(ws, resolved.projectDir, "memory.db"), homePath: homedir4() });
+            const notice = resolveSlotText("first-create-notice", { dbPath: join10(ws, resolved.projectDir, "memory.db"), homePath: homedir4() });
             const rewritten = [...decision.messages];
             rewritten.splice(rewritten.indexOf(firstUser2), 0, createMemoryNoticeMessage(notice));
             ctx.logger.info("meow-memory: first-create notice injected (fresh memory.db)");
@@ -5099,7 +5309,7 @@ ${e.stack ?? ""}` : String(e)}
           titleMax: resolved.titleMax
         }, resolved.projectDir);
         try {
-          appendFileSync2(join9(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"}
+          appendFileSync3(join10(ws, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] hit-chain pid=${process.pid} sid=${shortSessionId(sid)} textLen=${text.length} hit=${hit === null ? "null" : "yes"}
 `);
         } catch {
         }
@@ -5129,13 +5339,30 @@ ${e.stack ?? ""}` : String(e)}
     const t0 = Date.now();
     if (agent.session.header.origin === "subagent") return;
     registerLiveAgent(agent);
+    const sidTs = sessionIdOfAgent(agent);
+    if (delegateRestore.has(sidTs) && typeof agent.model?.select === "function") {
+      try {
+        const remembered = delegateRestore.get(sidTs);
+        const cur = mainRouteOf(agent.model.current() ?? {});
+        if (cur.provider === remembered.route.provider && cur.model === remembered.route.model) {
+          ;
+          agent.model.select({
+            provider: remembered.main.provider,
+            model: remembered.main.model,
+            ...remembered.main.reasoningEffort === void 0 ? {} : { reasoningEffort: remembered.main.reasoningEffort }
+          });
+          delegateRestore.delete(sidTs);
+          ctx.logger.info(`meow-memory: restore main model ${remembered.main.provider}/${remembered.main.model} at memory turn end (#110)`);
+        }
+      } catch {
+      }
+    }
     const endReason = lastTurnEndReason(sessionEventsOf(agent.session));
     const dreamTurn = wasDreamTurn(sessionEventsOf(agent.session));
     const wsTs = workspaceOfAgent(agent);
-    const sidTs = sessionIdOfAgent(agent);
     if (wsTs) {
       try {
-        appendFileSync2(join9(wsTs, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] turn-stopping pid=${process.pid} sid=${shortSessionId(sidTs)} reason=${endReason ?? "none"} wasDream=${dreamTurn}
+        appendFileSync3(join10(wsTs, resolved.projectDir, "dream-debug.log"), `[${(/* @__PURE__ */ new Date()).toISOString()}] turn-stopping pid=${process.pid} sid=${shortSessionId(sidTs)} reason=${endReason ?? "none"} wasDream=${dreamTurn}
 `);
       } catch {
       }
@@ -5146,6 +5373,14 @@ ${e.stack ?? ""}` : String(e)}
     }
     if (dreamTurn) {
       if (endReason === "error") {
+        const err = lastTurnErrorInfo(sessionEventsOf(agent.session));
+        if (wsTs && sidTs && err !== null && isContextWindowError(err.code, err.message)) {
+          try {
+            handleMemoryTurnFailure(getDb(wsTs, resolved.projectDir), sidTs, wsTs, resolved.projectDir);
+          } catch {
+          }
+          return;
+        }
         try {
           if (wsTs && sidTs) getDb(wsTs, resolved.projectDir).releaseDream(sidTs);
         } catch {
@@ -5189,20 +5424,63 @@ ${e.stack ?? ""}` : String(e)}
     }
     if (Date.now() - t0 > 20) perf(`turn-stopping slow ${Date.now() - t0}ms`);
   };
+  const delegateRestore = /* @__PURE__ */ new Map();
+  const MAX_DELEGATE_TRACKED = 512;
+  const rememberOverride = (sid, main, route) => {
+    if (sid === "unknown") {
+      ctx.logger.info("meow-memory: delegate override skipped (session id unknown) \u2014 restore pairing not recorded (#114)");
+      return;
+    }
+    const prev = delegateRestore.get(sid);
+    if (prev === void 0) {
+      delegateRestore.set(sid, { main, route });
+    } else {
+      const complete = (r) => r.provider !== void 0 && r.model !== void 0;
+      delegateRestore.set(sid, { main: complete(prev.main) ? prev.main : complete(main) ? main : prev.main, route: prev.route });
+    }
+    while (delegateRestore.size > MAX_DELEGATE_TRACKED) {
+      const oldest = delegateRestore.keys().next().value;
+      if (oldest === void 0) break;
+      delegateRestore.delete(oldest);
+    }
+  };
+  const restoreMainModelFor = (sid) => {
+    const agent = getLiveAgent(sid);
+    if (agent === void 0 || typeof agent.model?.select !== "function" || typeof agent.model?.current !== "function") return false;
+    try {
+      const remembered = delegateRestore.get(sid);
+      if (remembered === void 0) return false;
+      const cur = mainRouteOf(agent.model.current() ?? {});
+      if (cur.provider === remembered.route.provider && cur.model === remembered.route.model) {
+        ;
+        agent.model.select({
+          provider: remembered.main.provider,
+          model: remembered.main.model,
+          ...remembered.main.reasoningEffort === void 0 ? {} : { reasoningEffort: remembered.main.reasoningEffort }
+        });
+        delegateRestore.delete(sid);
+        ctx.logger.info(`meow-memory: restore main model ${remembered.main.provider}/${remembered.main.model} after memory-turn failure (#118)`);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
   if (resolved.delegate.modelSpec !== void 0) {
     const spec = resolved.delegate.modelSpec;
     const delegateEffort = resolved.delegate.effort;
-    const delegateRestore = /* @__PURE__ */ new Map();
-    const MAX_DELEGATE_TRACKED = 512;
-    const rememberOverride = (sid, main, route) => {
-      if (sid === "unknown" || delegateRestore.has(sid)) return;
-      delegateRestore.set(sid, { main, route });
-      while (delegateRestore.size > MAX_DELEGATE_TRACKED) {
-        const oldest = delegateRestore.keys().next().value;
-        if (oldest === void 0) break;
-        delegateRestore.delete(oldest);
-      }
-    };
+    setMemoryTurnEnqueuedHook((agent) => {
+      if (typeof agent.model?.select !== "function") return;
+      const sid = sessionIdOfAgent(agent);
+      const cur = mainRouteOf(agent.model.current() ?? {});
+      const route = { provider: spec.provider ?? cur.provider, model: spec.model ?? cur.model };
+      rememberOverride(sid, cur, route);
+      agent.model.select(
+        delegateEffort === "inherit" && cur.reasoningEffort !== void 0 ? { provider: route.provider, model: route.model, reasoningEffort: String(cur.reasoningEffort) } : delegateEffort !== void 0 && delegateEffort !== "inherit" ? { provider: route.provider, model: route.model, reasoningEffort: delegateEffort } : { provider: route.provider, model: route.model }
+      );
+      ctx.logger.info(`meow-memory: memory task turn \u2192 model override at turn entry ${route.provider}/${route.model}`);
+    });
     ctx.on("agent/pre-step", async (payload, next) => {
       const agent = payload?.agent;
       if (agent === void 0 || typeof agent.model?.select !== "function") return next();
@@ -5241,14 +5519,7 @@ ${e.stack ?? ""}` : String(e)}
       const events = sessionEventsOf(agent.session);
       if (isMemoryTaskTurn(events)) {
         const route = { provider: spec.provider ?? config3.provider, model: spec.model ?? config3.model };
-        if (sid !== "unknown" && !delegateRestore.has(sid)) {
-          delegateRestore.set(sid, { main: mainRouteOf(config3), route });
-          while (delegateRestore.size > MAX_DELEGATE_TRACKED) {
-            const oldest = delegateRestore.keys().next().value;
-            if (oldest === void 0) break;
-            delegateRestore.delete(oldest);
-          }
-        }
+        rememberOverride(sid, mainRouteOf(config3), route);
         ctx.logger.info(`meow-memory: memory task turn \u2192 model override ${spec.provider ?? "(inherit)"}/${spec.model ?? ""}${resolved.delegate.effort === void 0 ? " (effort stripped)" : ` (effort ${resolved.delegate.effort})`}`);
         const { reasoningEffort: _mainEffort, ...rest2 } = config3;
         return {
@@ -5398,7 +5669,7 @@ ${e.stack ?? ""}` : String(e)}
     }
   };
   tryRegisterDreamCommand(0);
-  ctx.on("dispose", () => {
+  const drainLifecycleDisposers = () => {
     for (const dispose of toolDisposers) {
       try {
         dispose();
@@ -5417,6 +5688,10 @@ ${e.stack ?? ""}` : String(e)}
       } catch {
       }
     }
+  };
+  ctx.effect(() => drainLifecycleDisposers);
+  ctx.on("dispose", () => {
+    drainLifecycleDisposers();
     clearTimeout(routeTimer);
     clearTimeout(commandTimer);
     stopDream();
@@ -5437,7 +5712,7 @@ function writeJson(res, status, body) {
   }
 }
 function readJsonBody(req, maxBytes = 65536) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const r = req;
     const chunks = [];
     let size = 0;
@@ -5452,11 +5727,11 @@ function readJsonBody(req, maxBytes = 65536) {
     });
     r.on?.("end", () => {
       if (chunks.length === 0) {
-        resolve2({});
+        resolve3({});
         return;
       }
       try {
-        resolve2(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        resolve3(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       } catch (e) {
         reject(e instanceof Error ? e : new Error(String(e)));
       }
@@ -5481,7 +5756,7 @@ async function resolveWorkspaceForSession(ctx, sessionId) {
   return null;
 }
 var windowIndex = /* @__PURE__ */ new Map();
-function loadWindowIndex(dir = ".dsh-meow", indexFile = join9(activeHomeDir(), "window-index.json")) {
+function loadWindowIndex(dir = ".dsh-meow", indexFile = join10(activeHomeDir(), "window-index.json")) {
   const workspaces = /* @__PURE__ */ new Set();
   try {
     const merged = JSON.parse(readFileSync8(indexFile, "utf8"));
@@ -5504,7 +5779,7 @@ function loadWindowIndex(dir = ".dsh-meow", indexFile = join9(activeHomeDir(), "
   }
 }
 function persistWindowIndex() {
-  const indexFile = join9(activeHomeDir(), "window-index.json");
+  const indexFile = join10(activeHomeDir(), "window-index.json");
   try {
     mkdirSync6(dirname6(indexFile), { recursive: true });
     let merged = {};
@@ -5624,11 +5899,13 @@ export {
   scanTurn,
   search,
   seedTrustedWorkspaces,
+  sendMemoryTurn,
   sessionEventsOf,
   sessionsFile,
   setActiveHomeDir,
   setCurrentProject,
   setMemoryToolGate,
+  setMemoryTurnEnqueuedHookForTest,
   setPromptLang,
   startWindowDream,
   stemEn,

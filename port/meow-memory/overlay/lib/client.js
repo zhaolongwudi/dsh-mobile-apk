@@ -98,6 +98,7 @@ var en = {
   "settings.group.base": "Basics",
   "settings.group.inject": "Injection and hits",
   "settings.group.reflect": "Reflection",
+  "settings.group.privacy": "Privacy",
   "settings.group.delegate": "Consolidation task model",
   "settings.group.dream": "Idle consolidation (dream)",
   "settings.group.language": "Language",
@@ -119,10 +120,14 @@ var en = {
   "settings.field.hitTopK.hint": "Upper bound on keyword-hit entries injected per message (fact/lesson/rules/topic)",
   "settings.field.titleMax.label": "Guide title truncation length",
   "settings.field.titleMax.hint": "Truncation length (characters) of the project list in the memory guide",
+  "settings.field.profileMax.label": "First-turn profile entry cap",
+  "settings.field.profileMax.hint": "Caps the combined number of soul + user entries injected on the first turn: both layers are ranked by importance, then by update time (newest first), keeping the top N; 0 = unlimited (default). The design-principles section is unaffected; trimmed entries stay reachable via memory_search (pass level explicitly)",
   "settings.field.reflect.label": "Automatic reflection",
   "settings.field.reflect.hint": "Review memory automatically after a task ends",
   "settings.field.reflectTurns.label": "Reflection trigger turns",
   "settings.field.reflectTurns.hint": "Consecutive tool steps inside one task needed to trigger at the end",
+  "settings.field.privacyEnabled.label": "Privacy preference",
+  "settings.field.privacyEnabled.hint": "When enabled, the memory write tools' guidance prompt asks the model not to record keys, tokens, or other sensitive information; off by default \u2014 memory records as-is.",
   "settings.field.delegateModel.label": "Reflection/dream model override",
   "settings.field.delegateModel.hint": "Empty = the main model throughout. When set, reflection and dream turns run on that model and switch back to the main model at the end of the turn (the rest of the conversation is unaffected); 'provider/model' selects the route, 'model' only changes the model name",
   "settings.field.delegateModel.placeholder": "e.g. zai-coding-cn/glm-5.3-flash",
@@ -204,6 +209,7 @@ var zh = {
   "settings.group.base": "\u57FA\u7840",
   "settings.group.inject": "\u6CE8\u5165\u4E0E\u547D\u4E2D",
   "settings.group.reflect": "\u53CD\u601D",
+  "settings.group.privacy": "\u9690\u79C1",
   "settings.group.delegate": "\u6574\u7406\u4EFB\u52A1\u6A21\u578B",
   "settings.group.dream": "\u7A7A\u95F2\u6574\u7406\uFF08dream\uFF09",
   "settings.group.language": "\u8BED\u8A00",
@@ -225,10 +231,14 @@ var zh = {
   "settings.field.hitTopK.hint": "\u5173\u952E\u8BCD\u547D\u4E2D\u6CE8\u5165\u7684\u6761\u76EE\u4E0A\u9650\uFF08fact/lesson/rules/topic\uFF09",
   "settings.field.titleMax.label": "\u5BFC\u5F15\u6807\u9898\u622A\u65AD\u957F\u5EA6",
   "settings.field.titleMax.hint": "\u8BB0\u5FC6\u5BFC\u5F15\u91CC\u9879\u76EE\u5217\u8868\u7684\u622A\u65AD\u957F\u5EA6\uFF08\u5B57\u7B26\uFF09",
+  "settings.field.profileMax.label": "\u9996\u8F6E\u753B\u50CF\u6761\u6570\u4E0A\u9650",
+  "settings.field.profileMax.hint": "\u9996\u8F6E\u6CE8\u5165\u7684\u3010\u5173\u4E8E\u4F60\u3011+\u3010\u5173\u4E8Euser\u3011\u5408\u8BA1\u6761\u6570\u4E0A\u9650\uFF1A\u4E24\u5C42\u5408\u5E76\u6309\u91CD\u8981\u6027\u3001\u540C\u91CD\u8981\u6027\u6309\u66F4\u65B0\u65F6\u95F4\u65B0\u2192\u65E7\u6392\u5E8F\u53D6\u524D N \u6761\uFF1B0=\u5168\u91CF\uFF08\u9ED8\u8BA4\uFF09\u3002\u8BBE\u8BA1\u539F\u5219\u533A\u4E0D\u53D7\u5F71\u54CD\uFF1B\u88AB\u622A\u6761\u76EE\u4ECD\u53EF\u7528 memory_search \u68C0\u7D22\uFF08\u663E\u5F0F\u4F20 level\uFF09",
   "settings.field.reflect.label": "\u81EA\u52A8\u53CD\u601D",
   "settings.field.reflect.hint": "\u4EFB\u52A1\u7ED3\u675F\u540E\u81EA\u52A8\u56DE\u987E\u8BB0\u5FC6",
   "settings.field.reflectTurns.label": "\u53CD\u601D\u89E6\u53D1\u8F6E\u6570",
   "settings.field.reflectTurns.hint": "\u5355\u4EFB\u52A1\u5185\u8FDE\u7EED\u5DE5\u5177\u6B65\u8FBE\u5230\u8BE5\u503C\u624D\u5728\u7ED3\u675F\u65F6\u89E6\u53D1",
+  "settings.field.privacyEnabled.label": "\u9690\u79C1\u503E\u5411",
+  "settings.field.privacyEnabled.hint": "\u5F00\u542F\u540E\uFF0C\u8BB0\u5FC6\u5199\u5165\u5DE5\u5177\u7684\u5F15\u5BFC prompt \u4F1A\u8981\u6C42\u6A21\u578B\u4E0D\u5F97\u8BB0\u5F55\u5BC6\u94A5\u3001Token \u7B49\u654F\u611F\u4FE1\u606F\uFF1B\u9ED8\u8BA4\u5173\u95ED\uFF0C\u8BB0\u5FC6\u5982\u5B9E\u8BB0\u5F55\u3002",
   "settings.field.delegateModel.label": "\u53CD\u601D/\u68A6\u5883\u6362\u6A21\u578B",
   "settings.field.delegateModel.hint": "\u7559\u7A7A=\u5168\u7A0B\u4E3B\u6A21\u578B\u3002\u586B\u5199\u540E\u53CD\u601D\u8F6E\u4E0E\u68A6\u5883\u8F6E\u81EA\u52A8\u6362\u7528\u8BE5\u6A21\u578B\u6267\u884C\uFF0C\u8F6E\u6B21\u7ED3\u675F\u81EA\u52A8\u6362\u56DE\u4E3B\u6A21\u578B\uFF08\u5176\u4F59\u5BF9\u8BDD\u4E0D\u53D7\u5F71\u54CD\uFF09\uFF1B'provider/model' \u6307\u5B9A\u8DEF\u7531\uFF0C'model' \u53EA\u6362\u6A21\u578B\u540D",
   "settings.field.delegateModel.placeholder": "\u5982 zai-coding-cn/glm-5.3-flash",
@@ -310,6 +320,7 @@ var ptBr = {
   "settings.group.base": "B\xE1sico",
   "settings.group.inject": "Inje\xE7\xE3o e acertos",
   "settings.group.reflect": "Reflex\xE3o",
+  "settings.group.privacy": "Privacidade",
   "settings.group.delegate": "Modelo das tarefas de consolida\xE7\xE3o",
   "settings.group.dream": "Consolida\xE7\xE3o ociosa (dream)",
   "settings.group.language": "Idioma",
@@ -331,10 +342,14 @@ var ptBr = {
   "settings.field.hitTopK.hint": "Limite de entradas por acerto de palavra-chave injetadas a cada mensagem (fact/lesson/rules/topic)",
   "settings.field.titleMax.label": "Comprimento de corte do t\xEDtulo",
   "settings.field.titleMax.hint": "Comprimento (em caracteres) do corte da lista de projetos no guia de mem\xF3ria",
+  "settings.field.profileMax.label": "Limite de entradas de perfil na primeira rodada",
+  "settings.field.profileMax.hint": "Limita o n\xFAmero combinado de entradas de soul + user injetadas na primeira rodada: as duas camadas s\xE3o ordenadas por import\xE2ncia e, em caso de empate, pela hora de atualiza\xE7\xE3o (mais recente primeiro), mantendo as N primeiras; 0 = ilimitado (padr\xE3o). A se\xE7\xE3o de princ\xEDpios de design n\xE3o \xE9 afetada; entradas cortadas continuam acess\xEDveis via memory_search (informe level explicitamente)",
   "settings.field.reflect.label": "Reflex\xE3o autom\xE1tica",
   "settings.field.reflect.hint": "Revisa a mem\xF3ria automaticamente quando a tarefa termina",
   "settings.field.reflectTurns.label": "Rodadas para disparar a reflex\xE3o",
   "settings.field.reflectTurns.hint": "Passos de ferramenta seguidos dentro de uma tarefa para disparar no fim",
+  "settings.field.privacyEnabled.label": "Prefer\xEAncia de privacidade",
+  "settings.field.privacyEnabled.hint": "Quando ativada, o prompt de orienta\xE7\xE3o das ferramentas de escrita de mem\xF3ria pede ao modelo que n\xE3o registre chaves, tokens e outras informa\xE7\xF5es sens\xEDveis; desativada por padr\xE3o \u2014 a mem\xF3ria registra tudo como \xE9.",
   "settings.field.delegateModel.label": "Trocar o modelo de reflex\xE3o/consolida\xE7\xE3o ociosa",
   "settings.field.delegateModel.hint": "Vazio = modelo principal do come\xE7o ao fim. Preenchido, as rodadas de reflex\xE3o e de consolida\xE7\xE3o ociosa passam a usar esse modelo e voltam ao principal no fim da rodada (o resto da conversa n\xE3o muda); 'provider/model' escolhe a rota, 'model' troca s\xF3 o nome do modelo",
   "settings.field.delegateModel.placeholder": "ex.: zai-coding-cn/glm-5.3-flash",
@@ -632,6 +647,7 @@ var UI_KEYS = [
   "settings.group.base",
   "settings.group.inject",
   "settings.group.reflect",
+  "settings.group.privacy",
   "settings.group.delegate",
   "settings.group.dream",
   "settings.group.language",
@@ -653,10 +669,14 @@ var UI_KEYS = [
   "settings.field.hitTopK.hint",
   "settings.field.titleMax.label",
   "settings.field.titleMax.hint",
+  "settings.field.profileMax.label",
+  "settings.field.profileMax.hint",
   "settings.field.reflect.label",
   "settings.field.reflect.hint",
   "settings.field.reflectTurns.label",
   "settings.field.reflectTurns.hint",
+  "settings.field.privacyEnabled.label",
+  "settings.field.privacyEnabled.hint",
   "settings.field.delegateModel.label",
   "settings.field.delegateModel.hint",
   "settings.field.delegateModel.placeholder",
@@ -1950,6 +1970,8 @@ var CONFIG_DEFAULTS = {
   projectDir: ".dsh-meow",
   hitTopK: 2,
   titleMax: 40,
+  /** 首轮画像条数上限（soul+user 合并池按 importance→新近度截 top N；0=全量）。 */
+  profileMax: 0,
   reflect: true,
   reflectTurns: 7,
   autoMigrate: true,
@@ -1971,7 +1993,10 @@ var CONFIG_DEFAULTS = {
   backup: { enabled: false },
   /** 工作区停用名单（#28）：列出的工作区（cwd 归一匹配）完全停用记忆——读/整理/写
    *  全部拒绝（含手动 /dream）。用于一次性任务的工作区，避免污染记忆库。 */
-  disabledWorkspaces: []
+  disabledWorkspaces: [],
+  /** 隐私倾向（默认关=记忆如实记录）：开启后 memory_remember / memory_update 的
+   *  工具描述追加「不记录敏感信息」红线句（prompt 级约束，非写入闸门）。 */
+  privacy: { enabled: false }
 };
 function factoryDefaultOf(spec) {
   const scope = spec.sub === void 0 ? CONFIG_DEFAULTS : CONFIG_DEFAULTS[spec.sub];
@@ -2045,7 +2070,8 @@ var FIELDS = [
     title: "settings.group.inject",
     fields: [
       { key: "hitTopK", label: "settings.field.hitTopK.label", type: "num", hint: "settings.field.hitTopK.hint" },
-      { key: "titleMax", label: "settings.field.titleMax.label", type: "num", hint: "settings.field.titleMax.hint" }
+      { key: "titleMax", label: "settings.field.titleMax.label", type: "num", hint: "settings.field.titleMax.hint" },
+      { key: "profileMax", label: "settings.field.profileMax.label", type: "num", hint: "settings.field.profileMax.hint" }
     ]
   },
   {
@@ -2053,6 +2079,12 @@ var FIELDS = [
     fields: [
       { key: "reflect", label: "settings.field.reflect.label", type: "bool", hint: "settings.field.reflect.hint" },
       { key: "reflectTurns", label: "settings.field.reflectTurns.label", type: "num", hint: "settings.field.reflectTurns.hint" }
+    ]
+  },
+  {
+    title: "settings.group.privacy",
+    fields: [
+      { key: "enabled", sub: "privacy", label: "settings.field.privacyEnabled.label", type: "bool", hint: "settings.field.privacyEnabled.hint" }
     ]
   },
   {

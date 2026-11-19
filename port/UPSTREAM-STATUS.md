@@ -2,18 +2,18 @@
 
 > 本文件由 `port/tools/upstream-watch.mjs` 自动生成并在推送时覆盖，勿手改。
 
-- 巡检时间：**2026-11-19 17:10:12 +08:00**
+- 巡检时间：**2026-11-20 07:28:16 +08:00**
 - 目标仓库：`zhaolongwudi/dsh-mobile-apk@main`（`port/` 目录）
-- 本次结论：**现装体检无 FAIL**，上游有新版 2 个，其中 2 个可否直接升
+- 本次结论：**有 1 个 kit 现装体检 FAIL**，上游有新版 0 个
 
 ## 一、总表
 
 | kit | 本机钉住 | 上游最新 | 上游状态 | 现装体检 | overlay 漂移 | 可移植性 |
 |---|---|---|---|---|---|---|
 | `dsh-memento` | 0.5.30 | — | RETIRED | 跳过 | — | — |
-| `dsh-purge` | 1.7.14 | 1.7.20 | OUTDATED | OK | — | READY |
-| `jet-hub` | 2.25.261114 | — | UNKNOWN | OK | — | — |
-| `meow-memory` | 0.32.7 | 0.33.1 | OUTDATED | OK（WARN 2） | 0 缺 | READY |
+| `dsh-purge` | 1.7.20 | 1.7.20 | CURRENT | OK | — | — |
+| `jet-hub` | 2.30.261119 | 2.30.261119 | CURRENT | FAIL 1 | — | — |
+| `meow-memory` | 0.33.1 | 0.33.1 | CURRENT | OK（WARN 4） | 0 缺 | — |
 
 ## 二、二次复核明细
 
@@ -23,30 +23,22 @@
 
 ### dsh-purge
 
-- 包：`dsh-purge-community`，本机 `1.7.14`，上游 `1.7.20`（上游 1.7.20 > 本机 1.7.14）
+- 包：`dsh-purge-community`，本机 `1.7.20`，上游 `1.7.20`（与上游一致）
 - 上游仓库最新提交：`e519253d` 2026-11-18T10:24:44Z docs: refresh contributor avatars
 - 现装体检：rc=0，FAIL 0 / WARN 0
-- 上游试移植：**READY** —— 无补丁（纯载荷型 kit），按包内容与运行时直检；语法/结构测试/真实导入通过
-  - 语法 `lib/index.js`：OK
-  - 真实导入（在 profile 内 import 一次）：PASS EXPORTS 13
 
 ### jet-hub
 
-- 包：`dsh-providers-hub`，本机 `2.25.261114`，上游 `—`（上游探针全部失败（网络或仓库改名））
-- 现装体检：rc=0，FAIL 0 / WARN 0
+- 包：`dsh-providers-hub`，本机 `2.30.261119`，上游 `2.30.261119`（与上游一致）
+- 现装体检：rc=1，FAIL 1 / WARN 0
+  - 未核销 `FAIL 引擎服 rev=8e3d816097a5，磁盘是 rev=538a2a4da4d2 —— 磁盘已换但引擎仍在服旧包。`
 
 ### meow-memory
 
-- 包：`meow-memory`，本机 `0.32.7`，上游 `0.33.1`（上游 0.33.1 > 本机 0.32.7）
+- 包：`meow-memory`，本机 `0.33.1`，上游 `0.33.1`（与上游一致）
 - 上游仓库最新提交：`435b26d3` 2026-11-17T16:58:03Z chore: release 0.33.1 — #117 事件流访问链硬化+失败响一次 / #118 egress fuse 止损+还原主模型 / #116 注销挂 ctx.effect + FAQ 安装坑
-- 现装体检：rc=0，FAIL 0 / WARN 2 / 共 27 项
+- 现装体检：rc=0，FAIL 0 / WARN 4 / 共 27 项
 - overlay 结构：2 个文件，缺失 0
-- 上游试移植：**READY** —— 补丁 3/3 全部可应用；语法/结构测试/真实导入通过
-  - 已可应用：01-settings-responsive-and-pickers.patch, 02-projectdir-guard.patch, 03-picker-scope-homeDir-only.patch
-  - 语法 `lib/index.js`：OK
-  - 语法 `lib/client.js`：OK
-  - 结构测试：PASS E④ 回退值是相对名 .dsh-meow | E④ 回退时响亮报错而非静默 | E④ 上游旧的裸默认值写法已移除 | 结论 PASS 33/33 全通过
-  - 真实导入（在 profile 内 import 一次）：PASS EXPORTS 125
 
 ## 三、复查口径
 

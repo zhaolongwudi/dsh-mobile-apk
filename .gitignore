@@ -66,3 +66,4 @@ port/*/payload/
 port/*/payload.tar.gz
 port/*/.sync/
 port/*/pkg/
+port/pkg/

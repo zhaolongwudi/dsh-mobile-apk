@@ -10,7 +10,7 @@ set -euo pipefail
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PKG="meow-memory"
-VERSION="0.32.7"
+VERSION="0.33.1"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
 PROFILE="${PROFILE:-web}"
 PROFILE_DIR="$DSH_HOME/profiles/$PROFILE"
