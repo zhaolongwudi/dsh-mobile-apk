@@ -102,11 +102,28 @@ for (const rel of files) {
 }
 
 const gitBlobSha = (buf) => crypto.createHash('sha1').update(`blob ${buf.length}\0`).update(buf).digest('hex')
-const changed = picked.filter((f) => {
+// 报告类文件每轮都带新巡检时间戳；只差这一行时不制造空提交。与 upstream-watch
+// 的 stripStamp 同口径，并把本地那行回退成远端值，保持工作树与远端逐字节一致。
+const stripStamp = (buf) => buf.toString('utf8').replace(/^- 巡检时间：.*$/m, '- 巡检时间：（仅实质变更时刷新）')
+const changed = []
+for (const f of picked) {
   const r = remote.get(f.rel)
-  if (r && r.sha === gitBlobSha(f.buf)) { console.log(`  远端内容已一致，跳过：${f.rel}`); return false }
-  return true
-})
+  if (r && r.sha === gitBlobSha(f.buf)) { console.log(`  远端内容已一致，跳过：${f.rel}`); continue }
+  if (r && /UPSTREAM-STATUS\.md$/.test(f.rel)) {
+    try {
+      const rb = await api('GET', `/repos/${REPO}/git/blobs/${r.sha}`)
+      const remoteBuf = Buffer.from(rb.content, 'base64')
+      if (stripStamp(remoteBuf) === stripStamp(f.buf)) {
+        const remoteLine = (remoteBuf.toString('utf8').match(/^- 巡检时间：.*$/m) || [''])[0]
+        const patched = Buffer.from(f.buf.toString('utf8').replace(/^- 巡检时间：.*$/m, remoteLine), 'utf8')
+        fs.writeFileSync(f.abs, patched)
+        console.log(`  仅巡检时间不同，跳过：${f.rel}`)
+        continue
+      }
+    } catch { /* 取不到远端 blob 就按内容变化处理 */ }
+  }
+  changed.push(f)
+}
 
 if (!changed.length) { console.log('无待推送内容'); process.exit(0) }
 console.log(`将推送 ${changed.length} 个文件：`)
