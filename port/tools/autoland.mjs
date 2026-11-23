@@ -91,7 +91,10 @@ const STRATEGY = {
     // 内容逐字节相同也会报 FAIL（2026-11-21 实测 a72c1f454105 vs 86173c078716 而内容一致）。
     // fork 的 jet-hub/port.sh 已换成内容比对（tools/check-client-bundle.mjs），
     // 这两条只在旧 kit 上才会出现，保留豁免以免误判为落地失败。
-    waiveFailPatterns: [/引擎仍在服旧包/, /引擎服 rev=.*磁盘是 rev=/, /客户端产物与磁盘不一致/],
+    // 2026-11-23 起文案变成「引擎下发内容与磁盘不同（content … / disk …，
+    // engine-tail …，served rev=…）」，旧正则不匹配 → 被当硬失败触发空回滚，
+    // 补进豁免。只对引擎缓存类生效，其它 FAIL 照常拦。
+    waiveFailPatterns: [/引擎仍在服旧包/, /引擎服 rev=.*磁盘是 rev=/, /客户端产物与磁盘不一致/, /引擎下发内容与磁盘不同/],
   },
 };
 
@@ -320,15 +323,22 @@ function verifyKit(kit, st = {}) {
   return { ok: okFinal, summary, rc: r.status, waived, realFails };
 }
 
-function rollback(kit, stamp) {
+function rollback(kit, backupName) {
   const kitDir = path.join(PORT, kit);
-  const bk = path.join(BACKUP_ROOT, `${kit}-${stamp}`);
-  if (!fs.existsSync(bk)) return;
+  // 调用处传的是 path.basename(bk)，已含 `${kit}-` 前缀（如 jet-hub-2026-11-22-179…）。
+  // 早期这里又拼一次 `${kit}-${stamp}` → jet-hub-jet-hub-…，备份永远找不到，
+  // 回滚静默 return，kit 目录却留在新版 —— 2026-11-23 实测确认的空回滚 bug。
+  const bk = path.join(BACKUP_ROOT, backupName);
+  if (!fs.existsSync(bk)) {
+    log(`  ✘ 回滚找不到备份 $bk（跳过，kit 目录仍留当前版本）`);
+    return false;
+  }
   fs.rmSync(kitDir, { recursive: true, force: true });
   fs.cpSync(bk, kitDir, { recursive: true });
   // 重装回滚前的版本
   try { installKit(kit); } catch { /* 已尽力 */ }
   log(`  已回滚 $kit ← $bk`);
+  return true;
 }
 
 /** 用 api-push.mjs 推整个工作树到远端 main */
