@@ -2,9 +2,9 @@
 
 > 本文件由 `port/tools/upstream-watch.mjs` 自动生成并在推送时覆盖，勿手改。
 
-- 巡检时间：**2026-11-20 07:30:45 +08:00**
+- 巡检时间：**2026-11-23 05:01:56 +08:00**
 - 目标仓库：`zhaolongwudi/dsh-mobile-apk@main`（`port/` 目录）
-- 本次结论：**有 1 个 kit 现装体检 FAIL**，上游有新版 0 个
+- 本次结论：**有 1 个 kit 现装体检 FAIL**，上游有新版 2 个，其中 1 个可否直接升
 
 ## 一、总表
 
@@ -12,8 +12,8 @@
 |---|---|---|---|---|---|---|
 | `dsh-memento` | 0.5.30 | — | RETIRED | 跳过 | — | — |
 | `dsh-purge` | 1.7.20 | 1.7.20 | CURRENT | OK | — | — |
-| `jet-hub` | 2.30.261119 | 2.30.261119 | CURRENT | FAIL 1 | — | — |
-| `meow-memory` | 0.33.1 | 0.33.1 | CURRENT | OK（WARN 4） | 0 缺 | — |
+| `jet-hub` | 2.31.261120 | 2.33.261122 | OUTDATED | FAIL 1 | 1 缺 | READY |
+| `meow-memory` | 0.33.1 | 0.33.2 | OUTDATED | OK（WARN 4） | 0 缺 | READY |
 
 ## 二、二次复核明细
 
@@ -29,16 +29,26 @@
 
 ### jet-hub
 
-- 包：`dsh-providers-hub`，本机 `2.30.261119`，上游 `2.30.261119`（与上游一致）
+- 包：`dsh-providers-hub`，本机 `2.31.261120`，上游 `2.33.261122`（上游 2.33.261122 > 本机 2.31.261120）
 - 现装体检：rc=1，FAIL 1 / WARN 0
-  - 未核销 `FAIL 引擎服 rev=8e3d816097a5，磁盘是 rev=538a2a4da4d2 —— 磁盘已换但引擎仍在服旧包。`
+  - 未核销 `FAIL 有声明包与锁版本不符，跑 lockfix`
+- overlay 结构：1 个文件，缺失 1（mobile.css）
+- 上游试移植：**READY** —— 无补丁（纯载荷型 kit），按包内容与运行时直检；语法/结构测试/真实导入通过
+  - 语法 `lib/index.js`：OK
+  - 真实导入（在 profile 内 import 一次）：PASS EXPORTS 7
 
 ### meow-memory
 
-- 包：`meow-memory`，本机 `0.33.1`，上游 `0.33.1`（与上游一致）
-- 上游仓库最新提交：`435b26d3` 2026-11-17T16:58:03Z chore: release 0.33.1 — #117 事件流访问链硬化+失败响一次 / #118 egress fuse 止损+还原主模型 / #116 注销挂 ctx.effect + FAQ 安装坑
+- 包：`meow-memory`，本机 `0.33.1`，上游 `0.33.2`（上游 0.33.2 > 本机 0.33.1）
+- 上游仓库最新提交：`92035216` 2026-11-21T17:27:22Z chore: release 0.33.2 — #120 整理轮步数硬上限 / #123 回执完整 id+读路径歧义守卫 / #122 命中注入准入门槛+hitStopwords / #121 信任门顺序
 - 现装体检：rc=0，FAIL 0 / WARN 4 / 共 27 项
 - overlay 结构：2 个文件，缺失 0
+- 上游试移植：**READY** —— 补丁 3/3 全部可应用；语法/结构测试/真实导入通过
+  - 已可应用：01-settings-responsive-and-pickers.patch, 02-projectdir-guard.patch, 03-picker-scope-homeDir-only.patch
+  - 语法 `lib/index.js`：OK
+  - 语法 `lib/client.js`：OK
+  - 结构测试：PASS E④ 回退值是相对名 .dsh-meow | E④ 回退时响亮报错而非静默 | E④ 上游旧的裸默认值写法已移除 | 结论 PASS 33/33 全通过
+  - 真实导入（在 profile 内 import 一次）：PASS EXPORTS 125
 
 ## 三、复查口径
 

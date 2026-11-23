@@ -32,6 +32,11 @@ MANIFEST=$SELF/manifest.json
 
 die() { printf 'port: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
+# ⚠️ fail/warn 是**函数**，与 verify 里的同名局部变量 `local fail=0` 不同层，
+# 但曾因两者从未定义、调用处直接报 "fail: command not found"，导致所有失败
+# 路径都**打不出原因**（只留下一个没有解释的 FAIL 行）。2026-11-21 补上。
+warn() { printf '  WARN  %s\n' "$*"; }
+fail() { printf '  FAIL  %s\n' "$*"; }
 
 need_runtime() {
   [ -x "$NODE" ] || die "找不到运行时 node：$NODE（可用 NODE=... 覆盖）"
@@ -180,6 +185,21 @@ cmd_install() {
     done
     printf '%s\n' "$stamp" > "$STATE"
     say "文件落位完成：$version"
+  fi
+
+  # ── 移动端适配层（2026-11-21）────────────────────────────────────────────
+  # 上游 jet-hub 的窄屏规则只覆盖了统计带 / 左侧 rail / 积分徽标弹层三处，
+  # 账号管理页头那排操作按钮与账号卡片的动作行在手机上没有任何适配：
+  # 按钮被 margin-left:auto + flex-end 顶到最右、折行后两行各自右对齐（截图
+  # 表现为「错位的两段」），卡片动作行 nowrap 时末尾按钮被裁。
+  # 修法是**追加** CSS 到客户端产物的 STYLES 模板末尾，不改上游任何一行。
+  #
+  # ⚠️ 必须放在「文件落位」之后：落位会 rm -rf 整个包目录，先注入会被抹掉。
+  # ⚠️ 幂等：脚本按 STYLES 里的 marker 判，已注入直接跳过、不动 mtime。
+  # ⚠️ 只改磁盘文件不够 —— 引擎启动时缓存 client bundle，必须重启应用才生效。
+  if [ -f "$SELF/tools/apply-mobile-css.mjs" ] && [ -f "$PROFILE/node_modules/$PKG/lib/client/jet-hub.js" ]; then
+    say "注入移动端适配层 ..."
+    DSH_HOME="$DSH_HOME" "$NODE" "$SELF/tools/apply-mobile-css.mjs" || say "  警告：适配层注入失败（不影响插件本体）"
   fi
 
   "$NODE" -e '
@@ -378,47 +398,34 @@ cmd_verify() {
   fi
 
   say "== 5. 客户端产物与磁盘一致（引擎服的是不是刚装的那份）=="
-  # 这一项为什么必须有（设备实测，不是推演）：
-  # 引擎在**启动时**读一次 client bundle，把 mtime/ctime/size 记成 artifactRevision 缓存在内存里
-  # （dsh-client-modules 的 rebuilt/artifactRevision）。port.sh 换掉磁盘文件后，**正在运行的引擎
-  # 仍旧服旧包**，且 pluginManager/listPlugins 一切正常、import() 也成功 —— 第 1/2/3/4 段全绿，
-  # 只有浏览器里看到的是上一版的界面。实测：磁盘 2.21（999429 字节、含 marvis），引擎服 2.20
-  # （984665 字节、marvis 零命中）。判据只能取自**引擎自己的应答**：boot manifest 里该条的 rev
-  # 必须等于磁盘产物的 artifactRevision。
-  local served_rev disk_rev
-  disk_rev=$("$NODE" -e '
-    const fs=require("node:fs"),c=require("node:crypto");
-    const p=process.argv[1];
-    const st=fs.statSync(p);
-    const h=c.createHash("sha1").update("plugin-artifact").update("\0");
-    for(const s of [String(st.mtimeMs),String(st.ctimeMs),String(st.size)]) h.update(`${Buffer.byteLength(s)}:`).update(s);
-    console.log(h.digest("hex").slice(0,12));
-  ' "$PROFILE/node_modules/$PKG/lib/client/jet-hub.js" 2>/dev/null)
-  if [ -n "$cookie" ] && [ -n "$disk_rev" ]; then
-    served_rev=$("$NODE" -e '
-      const http=require("node:http");
-      const [port,cookie,name]=process.argv.slice(1);
-      const req=http.request({host:"127.0.0.1",port:Number(port),path:"/",method:"GET",headers:{cookie:cookie}},res=>{
-        let d="";res.on("data",c=>d+=c);res.on("end",()=>{
-          const m=d.match(new RegExp("\"id\":\""+name.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"\"[^}]*?\"rev\":\"([0-9a-f]+)\""));
-          process.stdout.write(m?m[1]:"");
-        });
-      });
-      req.on("error",()=>{});
-      req.end();
-    ' "$port" "$cookie" "$PKG" 2>/dev/null)
-    if [ -z "$served_rev" ]; then
-      say "  WARN  读不到引擎 boot manifest 里本条的 rev，跳过（不影响文件面结论）"
-    elif [ "$served_rev" = "$disk_rev" ]; then
-      say "  PASS  引擎服的是磁盘上这份（rev=$disk_rev）"
+  # 判据演进（实测驱动，三轮；与设备版 port-kit-v2 同步）：
+  #   ① 只比 rev：rev 由 mtime/ctime/size 派生（artifactRevision），重铺一次文件就换 rev，
+  #      即使内容逐字节相同 ⇒ 把「内容没变」误报成 FAIL。2026-11-21 本机实测：
+  #      jet-hub 磁盘 rev=a72c1f454105、引擎服 rev=86173c078716，但内容探针判 PASS
+  #      （content 1222617 / disk 1222617，engine-tail 72 字节）—— 就是这条误报。
+  #   ② 直接比 sha256：**仍然误报**。引擎下发文末自己追加
+  #      `;\n//# sourceMappingURL=??<pkg>/client.js.map&rev=<rev>\n`（实测 72~74 字节）。
+  #   ③ 现行判据：剥掉引擎追加的尾部再比内容（tools/check-client-bundle.mjs）。
+  #      ✔ 剥完相同 → PASS（含「rev 不同但内容相同」的正常态）
+  #      ✘ 剥完仍不同 → FAIL（引擎确实在服旧包）
+  #      ⚠ client-hmr 在本机 profile 里被显式禁用（cordis.patch.yml `- id: client-hmr disabled: true`，
+  #        见该文件 HMR 端口面收口注释），所以**没有** stat-poll 热更新 —— 内容不同时只能重启应用。
+  local disk_file=$PROFILE/node_modules/$PKG/lib/client/jet-hub.js
+  local probe=$SELF/tools/check-client-bundle.mjs
+  if [ -n "$cookie" ] && [ -f "$disk_file" ] && [ -f "$probe" ]; then
+    if "$NODE" "$probe" "$port" "$cookie" "$PKG" "$disk_file"; then
+      :
     else
-      say "  FAIL  引擎服 rev=$served_rev，磁盘是 rev=$disk_rev —— 磁盘已换但引擎仍在服旧包。"
-      say "        引擎只在启动时缓存 client bundle，**重启应用**后才更新（刷新页面不够）。"
-      say "        界面会显示上一版；功能面（fiber/网关）不受影响。"
-      fail=1
+      rc=$?
+      if [ "$rc" = 1 ]; then
+        fail "引擎仍在服旧包 —— 引擎只在启动时缓存 client bundle，**重启应用**才更新（刷新页面不够）"
+        fail=1
+      else
+        warn "内容探针跳过（rc=$rc）"
+      fi
     fi
   else
-    say "  SKIP  缺 cookie 或读不到磁盘产物，跳过"
+    warn "缺 cookie 或磁盘产物，跳过"
   fi
 
   say "== 6. 本地网关（默认 127.0.0.1:8326）=="

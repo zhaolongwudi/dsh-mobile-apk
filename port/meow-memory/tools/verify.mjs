@@ -35,7 +35,7 @@ const argOf = (k, d) => {
 };
 const AS_JSON = argv.includes('--json');
 const PKG = 'meow-memory';
-const VERSION = '0.33.1';
+const VERSION = '0.33.2';
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 const PROFILE = argOf('--profile', process.env.PROFILE || 'web');
 const PROFILE_DIR = path.join(DSH_HOME, 'profiles', PROFILE);

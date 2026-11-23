@@ -15,8 +15,8 @@
   "runtime": "dsh 0.2.2-rc.1（随 APK 快照）；宿主 @deepseek-ai 目录 = files/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai",
   "payload": {
     "file": "payload.tar.gz",
-    "sha256": "34c98e68da319f1b791e9af356ecf1faf51c8666ad175986028994fe4a261016",
-    "bytes": 2382399,
+    "sha256": "0816dbe45b32eb523666289e6ce3bb4150d9100487a3fbe94e977c56d5e70db3",
+    "bytes": 2385055,
     "entries": 602,
     "layout": "node_modules/（dsh-purge-community + yaml，纯 JS，无原生绑定、无符号链接）"
   },
@@ -57,6 +57,14 @@
       "file": "profiles/web/node_modules/dsh-purge-community",
       "why": "早期用源码树铺过一次：发布物 322 个文件、落出来 499 个（多出 test/ 106、packages/ 54、market/ 6、.github/ 6 等共 177 个 dev 件）；而 cp -R 是叠加式，上游删掉的文件不会随升级消失",
       "fix": "install 改成干净落位：旧目录先 mv 到 .purge-old-$$，发布物整份铺入后再删旧目录（落位失败自动移回）；重铺判据 = 与发布物逐文件相等（comm 比对），不等就重铺"
+    },
+    {
+      "id": "refusal-retry-dispatch-fix",
+      "file": "profiles/web/node_modules/dsh-purge-community/{lib/refusal-retry.js,lib/index.js}",
+      "why": "两条独立根因让罐头拒绝（Sorry, I can't respond to this question.）检测到了也不重试：A 上游把 reasoning-delta 当 decided 触发器，带推理模型（deepseek-v4-1-flash 等）流序 reasoning 先行，决策时 text=\"\" → looksLikeRefusal(\"\") 恒 false；B 重试用 next(opts)，而 cordis 4.1 的 waterfall next 丢弃参数且只允许调用一次（cordis/lib/index.js:903-918）→ nudge 到不了下游，第二次调用抛 next() called multiple times，整条流崩。实证：.live.ndjson session-75a442da… 连续三次罐头直出，dsh-purge-community/audit.jsonl 的 refusal_retry 记录为 0。",
+      "fix": "tools/patch-refusal-retry.mjs 四段修正：A 从 decided 条件去掉 reasoning-delta（否则 reasoning 先行时 text 为空、检测恒 false）；B 新增 REFUSAL_RETRY_MARK + refusalRedispatch(ctx, options)（用 ctx.get(\"llm\").stream 重新进入 waterfall，钩子见标记即放行），把 (opts)=>next(opts) 换成 (opts)=>refusalRedispatch(ctx,opts) —— cordis 的 next 丢弃参数且只允许调用一次；C reasoning-delta 进缓冲前直接 yield（否则首字被扣到正文才出，实测 770→3531ms）；D 检测器剔除被引用的片段（反引号/代码块/「」/“”/双引号）+ 位置断言（160 字后且全文>400 字的无锚点命中不算拒绝）。幂等、锚点命中数校验。已挂进 port.sh install/verify/sync。",
+      "evidence": "回归三件套：test-refusal-retrain.mjs（复刻宿主链路，模型固定罐头话术）正控 PASS / --neg=reasoning FAIL / --neg=dispatch FAIL；test-refusal-host-integration.mjs（真 LlmRuntime）PASS；test-refusal-detector.mjs 15 例误判漏判 0。真机实证：本机 audit.jsonl 2026-11-15 有 145 条 refusal_retry 记录、多个 pid 跑满 nudge→fiction→decompose→exhausted 三轮链，证明补丁在运行中的引擎里真实生效（此前为 0）。",
+      "knownLimits": "A/B/C 修好后链路通了（罐头→命中→重发），但真模型仍不买账，属模型层行为不是移植缺陷（实测 2026-11-15，deepseek-account/deepseek-flash 经本机网关）：① 五种 nudge 话术对创意类请求全部 REFUSE；② 对技术类请求 upstream RETRY_NUDGE 反而让回复从 2239 字缩到 904 字、拒绝更硬；③ prefill 换接点 9/9 看似 COMPLY，逐篇读全文后明确身体词 0、全部转场逃逸（词频判据是假阳性）。详见 docs/refusal-retry-findings.md。"
     }
   ],
   "stateDirs": [
@@ -66,6 +74,7 @@
     "$DSH_HOME/prompt-inject.md"
   ],
   "hostPatchFootprint": "$FILES/usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/<pkg>/lib/*.js 与若干 cordis.patch.yml（写入前自动备份；revert 可还原）",
-  "verifiedAt": "2026-11-19T23:20:05.022Z",
-  "verifiedHow": "2026-11-11 上游同步到 1.6.88（release tgz sha256 4a557104… 校验通过；lib/patches/ 与 1.6.86 逐字节相同 → 补丁表未变、锚点面未搬）→ 载荷重打包 entries=557/sha256 5421337b… → 干净落位（安装集与发布物逐文件一致 324/324，清掉 177 个 dev 件）→ port.sh verify 六段全绿（文件/装配/模块可加载/Android 执行器补丁/permission 固定/引擎 fiber）→ selfcheck state=ok ok=true applied=71/72 na=9 skipped=3 off=0 missing_file=0 level=qualified，宿主 24/25 层 ok（layout 层 Web 宿主预期 na）→ reanchor drifted=2，均为 optional（#54/#76）→ 执行器补丁正控 rc=0 / 负控 rc=1"
+  "verifiedAt": "2026-11-21T02:00:28.617Z",
+  "verifiedHow": "2026-11-11 上游同步到 1.6.88（release tgz sha256 4a557104… 校验通过；lib/patches/ 与 1.6.86 逐字节相同 → 补丁表未变、锚点面未搬）→ 载荷重打包 entries=557/sha256 5421337b… → 干净落位（安装集与发布物逐文件一致 324/324，清掉 177 个 dev 件）→ port.sh verify 六段全绿（文件/装配/模块可加载/Android 执行器补丁/permission 固定/引擎 fiber）→ selfcheck state=ok ok=true applied=71/72 na=9 skipped=3 off=0 missing_file=0 level=qualified，宿主 24/25 层 ok（layout 层 Web 宿主预期 na）→ reanchor drifted=2，均为 optional（#54/#76）→ 执行器补丁正控 rc=0 / 负控 rc=1",
+  "knownLimits": "A/B/C 修好后链路通了（罐头→命中→重发），但真模型仍不买账，属模型层行为不是移植缺陷（实测 2026-11-15，deepseek-account/deepseek-flash 经本机网关）：① 五种 nudge 话术对创意类请求全部 REFUSE；② 对技术类请求 upstream RETRY_NUDGE 反而让回复从 2239 字缩到 904 字、拒绝更硬；③ prefill 换接点 9/9 看似 COMPLY，逐篇读全文后明确身体词 0、全部转场逃逸（词频判据是假阳性）。详见 docs/refusal-retry-findings.md。"
 }

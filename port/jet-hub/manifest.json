@@ -3,9 +3,9 @@
   "purpose": "把 Jet Hub（dsh-providers-hub）移植进 dsh-mobile-apk，并保证每日新构建物覆盖安装后仍在位",
   "package": {
     "name": "dsh-providers-hub",
-    "version": "2.30.261119",
+    "version": "2.33.261122",
     "integrity": "sha512-t3tOymIQnhAaC7bv2HP5+hlI1Q2FaEzeDDzkcTaNFiFOmw6JsKYXxf1z94d0O+uty+OF84lvNiVAL5Ri6CUUrw==",
-    "source": "https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-2.30.261119.tgz",
+    "source": "https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-2.33.261122.tgz",
     "engines": "^22.19.0 || >=24.0.0"
   },
   "bundledDependencies": {
@@ -26,9 +26,9 @@
   "runtime": "dsh 0.2.2-rc.1（随 APK 快照）",
   "payload": {
     "file": "payload.tar.gz",
-    "sha256": "9ba55918644e7256ea55614f058c8fe92836113b6b55406f90fecedd39e4828a",
-    "bytes": 10987642,
-    "files": 1645,
+    "sha256": "a37c4a8dda0fdd7c13a2b7fed4082faf1c6c38ecb46d136ad3b346b28a8ac7f1",
+    "bytes": 11146120,
+    "files": 1665,
     "layout": "node_modules/"
   },
   "mount": {
@@ -54,5 +54,18 @@
     ],
     "fix": "各包自己的 port 脚本按自身 manifest 调 lockfix.mjs（用法同本 kit）；未补前 verify 第 8 段会持续 WARN"
   },
-  "verifiedAt": "2026-11-19T23:23:36.822Z"
+  "verifiedAt": "2026-11-22T21:01:58.234Z",
+  "androidFixes": [
+    {
+      "id": "mobile-ui-overlay",
+      "file": "tools/apply-mobile-css.mjs + overlay/mobile.css + lib/client/jet-hub.js 的 STYLES 末尾",
+      "why": "上游 jet-hub 的窄屏适配只覆盖三处（.dim-jh-globalStat / .dim-jh-layout rail / .dim-jh-badgePop），账号管理页头那排操作按钮与账号卡片的动作行**完全没有** @media 规则。在 400px 视口实测：.dim-jh-panelHead > .dim-jh-headerActions 仍是 justify-content: flex-end + margin-left: auto，5 个按钮折成 2 行且第二行「刷新积分」单独落在 x=326（右侧孤行、两行各自右对齐 = 视觉错位）；按钮高度只有 28px，低于触摸目标下限；.dim-jh-accountActions 是 flex-wrap: nowrap，动作多时末尾按钮被裁。",
+      "fix": "追加式注入：overlay/mobile.css 写适配层，tools/apply-mobile-css.mjs 把它内联进客户端产物 STYLES 模板末尾（不改上游任何一行，升级后原样重跑）。适配内容：页头按钮组改 flex-start + flex:1 0 100% 左对齐整行铺开；按钮 padding 6px 10px / line-height 20px 提到 34px 触摸高；卡片动作行允许 wrap；卡片内边距与 meta 标签列 52→56px 调整；弹窗贴边（overlay padding 12px）并改用 100dvh；超窄屏（<=400px）按钮组转横向滚动而非无限折行。port.sh install 末尾自动调用，幂等（按 marker 判，已注入跳过、不动 mtime）。",
+      "evidence": "正控（400px 视口，同一 DOM 结构注入前后对比）：注入前 justify=flex-end、5 按钮折 2 行、末个在 x=326 孤立；注入后 justify=flex-start、5 按钮同排 y=31、从 x=0 连续排到 374、按钮高 28→34px。语法：node --check 通过（注入后整体文件仍是合法 JS）。模板安全：mobile.css 内反引号 0 个、美元花括号 0 个，作为模板字符串内联实测可解析。幂等：复跑输出「SKIP 已注入」，STYLES 长度不变（174242）。",
+      "warning": "⚠️ 引擎只在启动时缓存 client bundle —— 注入后必须重启 DSH 应用才生效，刷新页面不够。port.sh verify 第 5 段会如实报 FAIL「引擎仍在服旧包」直到重启完成，那是正确告警不是故障。",
+      "round2": "2026-11-21 第二轮（用户截图圈选）：① 积分胶囊弹层 .dim-jh-badgePop —— 上游 720px 规则把定位改成 left:8px/right:8px 的贴边 fixed，却没清掉基础规则的 left:50%+translateX(-50%)，两者叠加实测 rect.left=-184（左边伸出屏幕 184px）、transform=matrix(1,0,0,1,-192,0)；且 --dsh-composer-height 在本机是空字符串、回退 152px 而输入框实测 148px。修：transform:none !important + bottom 锚 148px + max-height 用 100dvh-180px。修复后实测 x=8/right=392，完整落在 400px 视口内。② 左侧供应商栏 .dim-jh-rail —— 720px 下变横向条后无 z-index 且与 .dim-jh-globalStats 在视觉上重叠（压在账号数量卡上）、overflow:hidden 切掉首个按钮圆角（「渠道」缺字）、底部操作行无分隔。修：rail 加 position:relative + z-index:1 + margin-bottom，railScroll 左右内缩 2px，railActions 加分隔线。",
+      "evidence2": "胶囊正控（400x869 视口，同一 DOM 注入修复规则前后）：修复前 x=-184 / right=179 / transform=matrix(1,0,0,1,-192,0)；修复后 x=8 / right=392 / transform=none / bottom=168px，左右均不溢出。",
+      "idempotencyFix": "幂等判据从「marker 存在」升级为「内容哈希」：marker 是固定文本，overlay 内容改了但 marker 不变时会误判已是最新并跳过更新（本轮真踩）。现用 buildSection() 单一拼接口径生成 BEGIN/END 标记对，wantHash / payloadCss / 写后复核三处共用，避免任一处多一个换行导致哈希恒不等。"
+    }
+  ]
 }

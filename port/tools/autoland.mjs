@@ -87,7 +87,11 @@ const STRATEGY = {
     rebuildPayload: true,
     versionPinnedFiles: [],
     // verify 里这些 FAIL 是环境缓存/历史账本，非本次落地缺陷 —— 命中即核销
-    waiveFailPatterns: [/引擎仍在服旧包/, /引擎服 rev=.*磁盘是 rev=/],
+    // 第 5 段的 rev 判据是旧口径：rev 由 mtime/ctime/size 派生，重铺一次就换，
+    // 内容逐字节相同也会报 FAIL（2026-11-21 实测 a72c1f454105 vs 86173c078716 而内容一致）。
+    // fork 的 jet-hub/port.sh 已换成内容比对（tools/check-client-bundle.mjs），
+    // 这两条只在旧 kit 上才会出现，保留豁免以免误判为落地失败。
+    waiveFailPatterns: [/引擎仍在服旧包/, /引擎服 rev=.*磁盘是 rev=/, /客户端产物与磁盘不一致/],
   },
 };
 

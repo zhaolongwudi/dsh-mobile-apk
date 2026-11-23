@@ -642,8 +642,10 @@ var MemoryDb = class {
     );
     return full;
   }
-  /** 跨表定位（UUID 全局唯一，扫描全部表）。id 支持 8 位前缀匹配
-   *  （快照/检索结果给的是截断 id；前缀碰撞时取第一个）。 */
+  /** 跨表定位（UUID 全局唯一，扫描全部表）。id 支持前缀匹配——短 id 是**模型截断
+   *  输出**的容错通道（#123 澄清：检索/注入/回执给的都是完整 id，不存在「设计上的
+   *  截断 id」）；**前缀命中多条时静默取第一条**，只配首条即正确的展示场景，
+   *  写路径与读取必须走 findByIdAll 做歧义守卫（#62/#123）。 */
   findById(id) {
     const prefix = id.length < 36;
     for (const level of LEVELS) {
@@ -1028,6 +1030,8 @@ var CONFIG_DEFAULTS = {
   enabled: true,
   projectDir: ".dsh-meow",
   hitTopK: 2,
+  /** #122：命中链路停用词扩展（领域流程词）。设置页暂无列表编辑器，经 cordis.patch.yml 配置。 */
+  hitStopwords: [],
   titleMax: 40,
   /** 首轮画像条数上限（soul+user 合并池按 importance→新近度截 top N；0=全量）。 */
   profileMax: 0,
@@ -1578,6 +1582,57 @@ function normalizeEn(tokens) {
   }
   return out;
 }
+var ZH_HIT_STOPWORDS = /* @__PURE__ */ new Set([
+  "\u81EA\u5DF1",
+  "\u4EC0\u4E48",
+  "\u6709\u70B9",
+  "\u4E0D\u662F",
+  "\u8FD8\u662F",
+  "\u8FD8\u6709",
+  "\u5DF2\u7ECF",
+  "\u8FD9\u4E2A",
+  "\u90A3\u4E2A",
+  "\u73B0\u5728",
+  "\u7136\u540E",
+  "\u6240\u4EE5",
+  "\u4F46\u662F",
+  "\u5982\u679C",
+  "\u53EF\u4EE5",
+  "\u9700\u8981",
+  "\u600E\u4E48",
+  "\u7EE7\u7EED",
+  "\u65F6\u5019",
+  "\u5730\u65B9",
+  "\u6CA1\u6709",
+  "\u5C31\u662F",
+  "\u53EA\u662F",
+  "\u53EA\u6709",
+  "\u5173\u4E8E",
+  "\u56E0\u4E3A",
+  "\u5E94\u8BE5",
+  "\u53EF\u80FD",
+  "\u4E00\u4E0B",
+  "\u4E00\u70B9",
+  "\u76F4\u63A5",
+  "\u5F00\u59CB",
+  "\u6700\u540E",
+  "\u63A5\u7740",
+  "\u5176\u4ED6",
+  "\u5176\u5B83",
+  "\u5F53\u524D",
+  "\u4EE5\u53CA",
+  "\u5E76\u4E14",
+  "\u6216\u8005",
+  "\u4E24\u4E2A",
+  "\u6211\u4EEC",
+  "\u4F60\u4EEC",
+  "\u4ED6\u4EEC",
+  "\u5979\u4EEC",
+  "\u5B83\u4EEC"
+]);
+function makeHitKeep(stopwords) {
+  return (ts) => ts.filter((t) => t.length >= 2 && !/^\d{1,2}$/.test(t) && !ZH_HIT_STOPWORDS.has(t) && !stopwords.has(t));
+}
 var PORTER_STEP2 = {
   ational: "ate",
   tional: "tion",
@@ -1743,13 +1798,13 @@ function search(query, docs, opts = {}) {
 function keywordHitScore(query, docs, opts = {}) {
   const k = opts.k ?? 2;
   const now = opts.now === void 0 ? Date.now() : opts.now;
-  const keep = (ts) => ts.filter((t) => t.length >= 2);
-  const q = keep(tokenize(query));
+  const hitKeep = makeHitKeep(new Set(opts.stopwords ?? []));
+  const q = hitKeep(tokenize(query));
   if (q.length === 0 || docs.length === 0) return [];
   const qTf = /* @__PURE__ */ new Map();
   for (const t of q) qTf.set(t, (qTf.get(t) ?? 0) + 1);
   const n = docs.length;
-  const docToks = docs.map((d) => keep(tokenize([d.content, d.title ?? ""].join(" "))));
+  const docToks = docs.map((d) => hitKeep(tokenize([d.content, d.title ?? ""].join(" "))));
   const df = /* @__PURE__ */ new Map();
   const tf = [];
   for (const toks of docToks) {
@@ -1774,12 +1829,19 @@ function keywordHitScore(query, docs, opts = {}) {
   });
   const maxRaw = Math.max(...raw);
   const out = [];
+  const qLen = q.length;
   for (let di = 0; di < docs.length; di++) {
     if (raw[di] <= 0) continue;
-    const len = docToks[di].length;
     let overlap = 0;
-    for (const t of qTf.keys()) if (tf[di].has(t)) overlap++;
-    const coverage = len > 0 ? overlap / len : 0;
+    let onlyToken = "";
+    for (const t of qTf.keys()) if (tf[di].has(t)) {
+      overlap++;
+      onlyToken = t;
+    }
+    const strongSingle = onlyToken.length >= 3 || (docs[di].keywords ?? []).includes(onlyToken);
+    if (overlap < 2 && !strongSingle) continue;
+    const len = docToks[di].length;
+    const coverage = len > 0 ? overlap / Math.min(len, qLen) : 0;
     let w = 1;
     if (now !== null && docs[di].importance < 3 && !(raw[di] >= 0.85 * maxRaw)) {
       w = recencyWeight(now - (docs[di].last_accessed_at ?? docs[di].updated_at));
@@ -2207,7 +2269,7 @@ function hitQuery(db, workspace, sessionId, userText, o, dir) {
     // 匹配面 = 条目关键词（LLM 提取或自动 bigram；无关键词的旧条目回退内容前 100 字）。
     content: d.keywords.length > 0 ? d.keywords.join(" ") : d.content.slice(0, 100)
   }));
-  const hits = keywordHitScore(query, docs, { k: o.hitTopK });
+  const hits = keywordHitScore(query, docs, { k: o.hitTopK, stopwords: o.hitStopwords });
   const byId = new Map(hitRows.map((r) => [r.id, r]));
   return hits.map((h) => {
     const row = byId.get(h.id);
@@ -2592,7 +2654,7 @@ function rememberTool(dir, privacy) {
         const head = v.merged ? "\u2705 \u5DF2\u5408\u5E76\u5230\u5DF2\u6709\u6761\u76EE" : "\u2705 \u8BB0\u5FC6\u5DF2\u5199\u5165";
         return [{
           type: "text",
-          text: `${head}\uFF08${String(v.level ?? "fact")}${typeof v.id === "string" ? `\uFF0Cid=${v.id.slice(0, 8)}` : ""}\uFF09\u3002${proj}${kw}\u65E0\u9700\u91CD\u590D\u8C03\u7528\u672C\u5DE5\u5177\u3002`
+          text: `${head}\uFF08${String(v.level ?? "fact")}${typeof v.id === "string" ? `\uFF0Cid=${v.id}` : ""}\uFF09\u3002${proj}${kw}\u65E0\u9700\u91CD\u590D\u8C03\u7528\u672C\u5DE5\u5177\u3002`
         }];
       }
     },
@@ -2889,7 +2951,7 @@ function findSimilarTool(dir) {
         const v = value;
         return (v.hits ?? []).map((h) => ({
           type: "text",
-          text: `[${String(h.level ?? "")} ${String(h.id ?? "").slice(0, 12)}] \u76F8\u4F3C\u5EA6 ${Number(h.similarity ?? 0).toFixed(3)} ${String(h.title ?? "")} ${String(h.content ?? "").slice(0, 80)}`
+          text: `[${String(h.level ?? "")} ${String(h.id ?? "")}] \u76F8\u4F3C\u5EA6 ${Number(h.similarity ?? 0).toFixed(3)} ${String(h.title ?? "")} ${String(h.content ?? "").slice(0, 80)}`
         }));
       }
     },
@@ -2901,8 +2963,12 @@ function findSimilarTool(dir) {
       const workspace = workspaceOf(exec);
       if (!workspace) throw new Error("memory_find_similar: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
       const db = getDb(workspace, dir);
-      const found = db.findById(id);
-      if (!found) throw new Error(`memory_find_similar: \u672A\u627E\u5230\u8BB0\u5FC6 ${id.slice(0, 12)}`);
+      const matches = db.findByIdAll(id);
+      if (matches.length === 0) throw new Error(`memory_find_similar: \u672A\u627E\u5230\u8BB0\u5FC6 ${id.slice(0, 12)}`);
+      if (matches.length > 1) {
+        throw new Error(`memory_find_similar: \u77ED id "${id}" \u552F\u4E00\u6027\u4E0D\u8DB3\uFF0C\u547D\u4E2D ${matches.length} \u6761\uFF08${matches.map((m) => `${m.level}:${m.row.id}`).join("\uFF1B")}\uFF09\uFF0C\u8BF7\u6539\u7528\u5B8C\u6574 id`);
+      }
+      const found = matches[0];
       const sessionId = sessionIdOf(exec);
       const seen = readSeen(workspace, sessionId ?? "unknown", dir);
       const kRaw = coerceNumber(parsed.k);
@@ -2960,6 +3026,19 @@ function readTool(dir) {
         required: ["found"],
         properties: {
           found: { type: "boolean" },
+          ambiguous: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["id", "level"],
+              properties: {
+                id: { type: "string" },
+                level: { type: "string" },
+                title: { type: "string" }
+              }
+            }
+          },
           id: { type: "string" },
           level: { type: "string" },
           title: { type: "string" },
@@ -2979,6 +3058,9 @@ function readTool(dir) {
         const v = value;
         const hint = "\u5982\u679C\u4F60\u786E\u5B9E\u9700\u8981\u66F4\u591A\u7EC6\u8282\uFF0C\u53EF\u4EE5\u76F4\u63A5\u53BB\u804A\u5929\u8BB0\u5F55\u91CC\u641C\u7D22\u76F8\u5173\u5173\u952E\u8BCD\u3002";
         if (!v.found) return [{ type: "text", text: `\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\u3002${hint}` }];
+        if (Array.isArray(v.ambiguous) && v.ambiguous.length > 0) {
+          return [{ type: "text", text: `\u77ED id \u547D\u4E2D ${v.ambiguous.length} \u6761\u8BB0\u5FC6\uFF08\u524D\u7F00\u78B0\u649E\uFF09\uFF0C\u672C\u56DE\u6267\u4E0D\u542B\u731C\u6D4B\u5185\u5BB9\u2014\u2014\u8BF7\u6539\u7528\u4EE5\u4E0B\u5B8C\u6574 id \u91CD\u8BFB\uFF1A${v.ambiguous.map((a) => `[${String(a.level ?? "")}:${String(a.id ?? "")}]`).join("\u3001")}` }];
+        }
         const parts = [`[${String(v.level ?? "")}] ${String(v.title ?? "")}\uFF08${String(v.status ?? "")}\uFF09`];
         if (v.project) parts.push(`\u9879\u76EE\uFF1A${String(v.project)}`);
         if (v.goal) parts.push(`\u76EE\u6807\uFF1A${String(v.goal)}`);
@@ -2995,9 +3077,16 @@ function readTool(dir) {
       if (!id) throw new Error("memory_read: id \u4E0D\u80FD\u4E3A\u7A7A");
       const workspace = workspaceOf(exec);
       if (!workspace) throw new Error("memory_read: \u65E0\u6CD5\u786E\u5B9A\u5DE5\u4F5C\u533A\uFF08\u4F1A\u8BDD\u65E0 cwd\uFF09\u2014\u2014\u8BB0\u5FC6\u5DE5\u5177\u9700\u5728\u6709\u5DE5\u4F5C\u533A cwd \u7684\u4F1A\u8BDD\u5185\u8C03\u7528\uFF0C\u5916\u90E8/\u65E0\u4F1A\u8BDD\u8C03\u7528\u94FE\u4E0D\u53D7\u652F\u6301\uFF08#94\uFF09");
-      const found = getDb(workspace, dir).findById(id);
-      if (!found) return { found: false };
-      const { row } = found;
+      const db = getDb(workspace, dir);
+      const matches = db.findByIdAll(id);
+      if (matches.length === 0) return { found: false };
+      if (matches.length > 1) {
+        return {
+          found: true,
+          ambiguous: matches.map((m) => ({ id: m.row.id, level: m.level, title: m.row.title ?? "" }))
+        };
+      }
+      const { row } = matches[0];
       markAccessed(workspace, sessionIdOf(exec) ?? "unknown", [row.id], dir);
       return {
         found: true,
@@ -3053,7 +3142,7 @@ function updateTool(dir, privacy) {
       },
       render: (_args, value) => {
         const v = value;
-        return [{ type: "text", text: v.ok ? `\u2705 \u5DF2\u66F4\u65B0\uFF08${String(v.level ?? "")} ${String(v.id ?? "").slice(0, 8)}\uFF09\u3002` : "\u66F4\u65B0\u5931\u8D25\uFF1A\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\u3002" }];
+        return [{ type: "text", text: v.ok ? `\u2705 \u5DF2\u66F4\u65B0\uFF08${String(v.level ?? "")} ${String(v.id ?? "")}\uFF09\u3002` : "\u66F4\u65B0\u5931\u8D25\uFF1A\u672A\u627E\u5230\u8BE5\u8BB0\u5FC6\u3002" }];
       }
     },
     async execute(args, exec) {
@@ -3067,7 +3156,7 @@ function updateTool(dir, privacy) {
       const sessionId = sessionIdOf(exec);
       const matches = db.findByIdAll(id);
       if (matches.length > 1) {
-        const list = matches.map((m) => `${m.level}:${m.row.id.slice(0, 8)} ${m.row.title || m.row.content.slice(0, 40)}`).join("\uFF1B");
+        const list = matches.map((m) => `${m.level}:${m.row.id} ${m.row.title || m.row.content.slice(0, 40)}`).join("\uFF1B");
         throw new Error(`memory_update: \u77ED id "${id}" \u547D\u4E2D ${matches.length} \u6761\uFF08${list}\uFF09\uFF0C\u8BF7\u6539\u7528\u5B8C\u6574 id`);
       }
       const found = matches[0];
@@ -3098,7 +3187,7 @@ function updateTool(dir, privacy) {
     },
     presentCall(args) {
       const parsed = args;
-      return { card: "generic", title: `memory_update: ${String(parsed.id ?? "").slice(0, 8)}${parsed.status ? ` \u2192 ${String(parsed.status)}` : ""}`, kind: "write" };
+      return { card: "generic", title: `memory_update: ${String(parsed.id ?? "").slice(0, 12)}${parsed.status ? ` \u2192 ${String(parsed.status)}` : ""}`, kind: "write" };
     }
   };
 }
@@ -4306,6 +4395,10 @@ var config = z.object({
   homeDirPresets: z.dict(z.string()).default(homeDirPresetsDefault()),
   /** 关键词命中条数上限（fact/lesson/rules/topic 短条目，每条用户消息命中注入）。 */
   hitTopK: z.number().min(0).max(10).default(2),
+  /** #122：命中链路停用词扩展——内置中文功能词表之外，用户可追加领域流程词
+   *  （如「拍板」「测试」这类高频但无检索意义的词）。仅作用于命中注入链路，
+   *  memory_search/find_similar 检索不受影响。 */
+  hitStopwords: z.array(z.string().min(1)).max(200).default([]),
   /** 导引标题截断长度。 */
   titleMax: z.number().min(10).max(200).default(40),
   /** 首轮画像条数上限（soul+user 合并池按 importance 降序、同重要性按更新时间新→旧
@@ -4489,6 +4582,7 @@ function resolveConfig(config2) {
     projectDir: normalizeProjectDir(c.projectDir),
     homeDir: typeof c.homeDir === "string" ? c.homeDir : void 0,
     hitTopK: c.hitTopK ?? 2,
+    hitStopwords: c.hitStopwords ?? [],
     titleMax: c.titleMax ?? 40,
     // 手编 settings.yaml 不经 zod/设置页校验——这里兜底防御（非有限数字/负数回落全量）。
     profileMax: typeof c.profileMax === "number" && Number.isFinite(c.profileMax) ? Math.max(0, Math.round(c.profileMax)) : 0,
@@ -4647,7 +4741,7 @@ function installSettingsSectionCompat(settingsCtx, ownerCtx, ns, schema, entry, 
   });
 }
 var SETTINGS_SOURCE_WAIT_MS = 250;
-var LIVE_CONFIG_KEYS = ["hitTopK", "titleMax", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
+var LIVE_CONFIG_KEYS = ["hitTopK", "hitStopwords", "titleMax", "reflect", "reflectTurns", "autoMigrate", "promptLang", "disabledWorkspaces"];
 var LIVE_DREAM_KEYS = ["enabled", "idleMinutes", "suppressWindows", "suppressLeadMinutes", "checkMinutes", "timeZone", "rulesReviewDays"];
 function workspaceDisabledMatch(list, ws) {
   const n = normalizeWorkspacePath(ws);
@@ -5095,6 +5189,10 @@ ${e.stack ?? ""}` : String(e)}
   const lastWindowWrite = /* @__PURE__ */ new Map();
   const isPluginTurn = /* @__PURE__ */ new Map();
   const turnHadMessage = /* @__PURE__ */ new Map();
+  const PLUGIN_TURN_STEP_CAP = 30;
+  const PLUGIN_TURN_STEP_CAP_GRACE = 6;
+  const pluginTurnSteps = /* @__PURE__ */ new Map();
+  const pluginTurnCapAbort = /* @__PURE__ */ new Map();
   ctx.on("session/event", (session, event) => {
     perfEvent();
     noteActivity();
@@ -5120,6 +5218,8 @@ ${e.stack ?? ""}` : String(e)}
       if (t === "turn/start") {
         isPluginTurn.set(sid, false);
         turnHadMessage.set(sid, false);
+        pluginTurnSteps.delete(sid);
+        pluginTurnCapAbort.delete(sid);
         return;
       }
       if (t === "user/message") {
@@ -5130,6 +5230,8 @@ ${e.stack ?? ""}` : String(e)}
           const msgText = (data?.content ?? []).filter((b) => b.type === "text" && typeof b.text === "string").map((b) => b.text ?? "").join(" ");
           if (msgText.includes(REFLECT_MARKER) || msgText.includes(DREAM_MARKER) || msgText.includes(REFLECT_DELEGATE_MARKER) || msgText.includes(DREAM_DELEGATE_MARKER) || msgText.includes(REFLECT_DONE_DELEGATE_MARKER)) {
             isPluginTurn.set(sid, true);
+            pluginTurnSteps.delete(sid);
+            pluginTurnCapAbort.delete(sid);
             return;
           }
         }
@@ -5182,7 +5284,59 @@ ${e.stack ?? ""}` : String(e)}
   });
   const firstUserHandled = /* @__PURE__ */ new Set();
   ctx.on("agent/pre-step", async ({ agent, messages, signal }, next) => {
+    const capSid = agent?.session?.header?.id;
+    const capWs = typeof capSid === "string" ? workspaceOfAgent(agent) : null;
+    const capActive = typeof capSid === "string" && signal?.aborted !== true && agent?.session?.header?.origin !== "subagent" && isPluginTurn.get(capSid) === true;
+    let capN = 0;
+    if (capActive) {
+      if (pluginTurnCapAbort.get(capSid) === true) {
+        throw new Error(`[meow-memory] \u6574\u7406\u8F6E\u6B65\u6570\u786C\u4E0A\u9650\u89E6\u53D1\uFF08${PLUGIN_TURN_STEP_CAP}+${PLUGIN_TURN_STEP_CAP_GRACE} \u6B65\uFF09\u2014\u2014\u63D0\u9192\u6536\u5C3E\u540E\u4ECD\u6301\u7EED\u8C03\u7528\u5DE5\u5177\uFF0C\u5224\u5B9A\u6A21\u578B\u9000\u5316\u5FAA\u73AF\uFF0C\u7194\u65AD\u672C\u8F6E (#120)`);
+      }
+      capN = (pluginTurnSteps.get(capSid) ?? 0) + 1;
+      pluginTurnSteps.set(capSid, capN);
+      if (capN > PLUGIN_TURN_STEP_CAP + PLUGIN_TURN_STEP_CAP_GRACE) {
+        pluginTurnSteps.delete(capSid);
+        pluginTurnCapAbort.set(capSid, true);
+        let outcome = "none";
+        if (typeof capWs === "string" && capWs.length > 0) {
+          try {
+            outcome = handleMemoryTurnFailure(getDb(capWs, resolved.projectDir), capSid, capWs, resolved.projectDir);
+          } catch {
+          }
+          try {
+            appendFileSync3(
+              join10(capWs, resolved.projectDir, "dream-debug.log"),
+              `[${(/* @__PURE__ */ new Date()).toISOString()}] dream step-cap abort sid=${shortSessionId(capSid)} steps=${PLUGIN_TURN_STEP_CAP}+${PLUGIN_TURN_STEP_CAP_GRACE} outcome=${outcome} (#120)
+`
+            );
+          } catch {
+          }
+          broadcast.broadcast(capSid, "active");
+        }
+        ctx.logger.warn(`[meow-memory] \u6574\u7406\u8F6E\u6B65\u6570\u786C\u4E0A\u9650\u89E6\u53D1\uFF08${PLUGIN_TURN_STEP_CAP}+${PLUGIN_TURN_STEP_CAP_GRACE} \u6B65\uFF09\u2014\u2014\u63D0\u9192\u6536\u5C3E\u540E\u4ECD\u6301\u7EED\u8C03\u7528\u5DE5\u5177\uFF0C\u5224\u5B9A\u6A21\u578B\u9000\u5316\u5FAA\u73AF\uFF0C\u7194\u65AD\u672C\u8F6E (#120)`);
+        throw new Error(`[meow-memory] \u6574\u7406\u8F6E\u6B65\u6570\u786C\u4E0A\u9650\u89E6\u53D1\uFF08${PLUGIN_TURN_STEP_CAP}+${PLUGIN_TURN_STEP_CAP_GRACE} \u6B65\uFF09\u2014\u2014\u63D0\u9192\u6536\u5C3E\u540E\u4ECD\u6301\u7EED\u8C03\u7528\u5DE5\u5177\uFF0C\u5224\u5B9A\u6A21\u578B\u9000\u5316\u5FAA\u73AF\uFF0C\u7194\u65AD\u672C\u8F6E (#120)`);
+      }
+    }
     const decision = await next();
+    if (capActive && capN === PLUGIN_TURN_STEP_CAP + 1) {
+      try {
+        if (typeof capWs === "string" && capWs.length > 0) {
+          appendFileSync3(
+            join10(capWs, resolved.projectDir, "dream-debug.log"),
+            `[${(/* @__PURE__ */ new Date()).toISOString()}] dream step-cap steer sid=${shortSessionId(capSid)} step=${PLUGIN_TURN_STEP_CAP + 1}
+`
+          );
+        }
+      } catch {
+      }
+      if (decision?.kind === "enter" && Array.isArray(decision.messages)) {
+        const wrapUp = createUserMessage3({
+          content: [{ type: "text", text: `\uFF08meow-memory \u6574\u7406\u8F6E\u5DF2\u8FBE ${PLUGIN_TURN_STEP_CAP} \u6B65\u4E0A\u9650\uFF1A\u8BF7\u7ACB\u5373\u505C\u6B62\u8C03\u7528\u5DE5\u5177\uFF0C\u76F4\u63A5\u7ED9\u51FA\u4E00\u53E5\u7B80\u77ED\u6536\u5C3E\u6587\u672C\u5E76\u7ED3\u675F\u672C\u8F6E\u3002\uFF09` }],
+          source: PLUGIN_SOURCE
+        });
+        return { ...decision, messages: [...decision.messages, wrapUp] };
+      }
+    }
     try {
       return await preStepInject({ agent, signal }, decision);
     } catch (e) {
@@ -5203,7 +5357,7 @@ ${e.stack ?? ""}` : String(e)}
     const ws = workspaceOfAgent(agent);
     const userMsgs = decision.messages.filter((m) => m.source?.kind === "user");
     if (userMsgs.length === 0) return decision;
-    if (ws !== null && isUntrustedMemoryWorkspace(ws)) {
+    if (ws !== null && isUntrustedMemoryWorkspace(ws) && existsSync9(join10(ws, resolved.projectDir))) {
       if (!hasExternalNoticeShown(ws)) {
         markExternalNoticeShown(ws);
         try {
@@ -5306,6 +5460,7 @@ ${e.stack ?? ""}` : String(e)}
         const db = getDb(ws, resolved.projectDir);
         const hit = buildHitInjection(db, ws, sid, text, {
           hitTopK: resolved.hitTopK,
+          hitStopwords: resolved.hitStopwords,
           titleMax: resolved.titleMax
         }, resolved.projectDir);
         try {
@@ -5696,6 +5851,8 @@ ${e.stack ?? ""}` : String(e)}
     clearTimeout(commandTimer);
     stopDream();
     disposeDreamHeartbeats();
+    pluginTurnSteps.clear();
+    pluginTurnCapAbort.clear();
     broadcast.dispose();
     try {
       closeAllDbs();

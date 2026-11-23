@@ -254,6 +254,16 @@ cmd_install() {
     say "  - 缺 tools/patch-android-exec.mjs，跳过"
   fi
 
+  # 罐头拒绝（"Sorry, I can't respond to this question."）的两处 Android 修正：
+  #   A reasoning-delta 被当决策点 → 带推理模型时 text 为空、检测永不触发；
+  #   B 重试用 next(opts) → cordis waterfall 丢弃参数且只允许调用一次 → nudge 到不了下游、
+  #     第二次调用抛 "next() called multiple times"。
+  # 见 tools/patch-refusal-retry.mjs 头注（含实测证据与正控/负控）。
+  if [ -f "$SELF/tools/patch-refusal-retry.mjs" ]; then
+    "$NODE" "$SELF/tools/patch-refusal-retry.mjs" "$PROFILE/node_modules/$PKG" || \
+      die "refusal-retry 修正未打上（上游形状变了？看 tools/patch-refusal-retry.mjs）"
+  fi
+
   "$NODE" -e '
     const fs=require("node:fs");
     const [file,name,version]=process.argv.slice(1);
@@ -398,6 +408,73 @@ cmd_verify() {
       say "  FAIL  Android 执行器补丁缺失/漂移 → 面板「重启/回滚」与演练台会崩（跑 install 重打）"; fail=1
     fi
   fi
+  if [ -f "$SELF/tools/patch-refusal-retry.mjs" ]; then
+    if "$NODE" "$SELF/tools/patch-refusal-retry.mjs" "$PROFILE/node_modules/$PKG" --check >/dev/null 2>&1; then
+      say "  PASS  refusal-retry 修正 A/B/C 都在位（reasoning 不决策 + 重试重新派发 + reasoning 即时放行）"
+      if [ -f "$SELF/tools/test-refusal-retrain.mjs" ]; then
+        if "$NODE" "$SELF/tools/test-refusal-retrain.mjs" "$PROFILE/node_modules/$PKG" >/dev/null 2>&1; then
+          say "  PASS  罐头拒绝回归：正控 PASS（nudge 已进入第 2 次出站请求）"
+        else
+          say "  FAIL  罐头拒绝回归正控不过 → 重试链没跑通（跑 install 重打）"; fail=1
+        fi
+        # 负控退出码 = 「是否如预期」：rc=0 表示上游形状确实跑不通（判据有效）。
+        if "$NODE" "$SELF/tools/test-refusal-retrain.mjs" "$PROFILE/node_modules/$PKG" --neg=dispatch >/dev/null 2>&1; then
+          say "  PASS  罐头拒绝回归：负控如期跑不通（上游形状不重试，判据有效）"
+        else
+          say "  FAIL  负控意外跑通 → 回归判据失效，上面的正控结论不可信"; fail=1
+        fi
+      fi
+    else
+      say "  FAIL  refusal-retry 修正缺失 → 罐头拒绝检测到了也不重试（跑 install 重打）"; fail=1
+    fi
+  fi
+
+  # 首字延迟的 A/B（C 修正的意义）：reasoning 不再被扣在缓冲里。
+  if [ -f "$SELF/tools/patch-refusal-retry.mjs" ]; then
+    if grep -qF 'if (step.value?.type === "reasoning-delta") { yield step.value; continue; }' \
+        "$PROFILE/node_modules/$PKG/lib/refusal-retry.js" 2>/dev/null; then
+      say "  PASS  reasoning-delta 即时放行（首字不被 400 字缓冲扣住）"
+    else
+      say "  FAIL  reasoning-delta 仍被扣在缓冲里 → 推理模型首字延迟约 +2.7s（跑 install 重打）"; fail=1
+    fi
+  fi
+  if [ -f "$SELF/tools/test-refusal-detector.mjs" ]; then
+    if out=$("$NODE" "$SELF/tools/test-refusal-detector.mjs" "$PROFILE/node_modules/$PKG" 2>&1); then
+      say "  PASS  检测器误判回归：$(printf '%s' "$out" | grep -m1 '共 ' | sed 's/^ *//')"
+    else
+      say "  FAIL  检测器误判回归不过（误判会丢弃已生成的正确回答）："
+      printf '%s\n' "$out" | grep '^BAD' | sed 's/^/        /' | head -6; fail=1
+    fi
+  fi
+  # 纯罐头兜底（整条只回一句拒稿）：尾部剥离无正文可救、nudge 只会更硬，
+  # 唯一有效手段是纯重采样。这条不设关就会回到"耗尽后把罐头交给用户"。
+  if [ -f "$SELF/tools/test-refusal-resample.mjs" ]; then
+    if out=$("$NODE" "$SELF/tools/test-refusal-resample.mjs" "$PROFILE/node_modules/$PKG" 2>&1); then
+      say "  PASS  纯罐头兜底重采样回归：$(printf '%s' "$out" | grep -m1 '共 ' | sed 's/^ *//')"
+    else
+      say "  FAIL  纯罐头兜底回归不过（耗尽后罐头会被原样交付给用户）："
+      printf '%s\n' "$out" | grep '^BAD' | sed 's/^/        /' | head -6; fail=1
+    fi
+  fi
+  if [ -f "$SELF/tools/test-refusal-host-integration.mjs" ]; then
+    if out=$("$NODE" "$SELF/tools/test-refusal-host-integration.mjs" "$PROFILE/node_modules/$PKG" 2>&1); then
+      say "  PASS  罐头拒绝回归（真 LlmRuntime）：$(printf '%s' "$out" | grep -m1 '带 nudge' | sed 's/^ *//')"
+    else
+      say "  FAIL  真 LlmRuntime 上重试链跑不通："; printf '%s\n' "$out" | sed 's/^/        /' | tail -8; fail=1
+    fi
+  fi
+
+  # 尾部罐头（粘贴在正文末尾的拒绝话术）——「还是一直提示」的真正成因。
+  # 旧检测器两道结构性漏检：refusalHead 只看前 800 字、D2 位置断言把长正文里的命中判成"不是在推脱"。
+  # 修法为尾部剥离（正文零损失），所以这里必须单独设关。
+  if [ -f "$SELF/tools/test-refusal-tail.mjs" ]; then
+    if out=$("$NODE" "$SELF/tools/test-refusal-tail.mjs" "$PROFILE/node_modules/$PKG" 2>&1); then
+      say "  PASS  尾部罐头剥离回归：$(printf '%s' "$out" | grep -m1 '共 ' | sed 's/^ *//')"
+    else
+      say "  FAIL  尾部罐头剥离回归不过（长正文+尾部罐头会原样显示给用户）："
+      printf '%s\n' "$out" | grep '^BAD' | sed 's/^/        /' | head -6; fail=1
+    fi
+  fi
 
   say "== 4. permission 预设固定 =="
   if grep -qF "$PIN_MARK" "$PROFILE/cordis.patch.yml" 2>/dev/null; then
@@ -521,10 +598,6 @@ cmd_sync() {
     [ "$got" = "$sha" ] || die "SHA-256 校验失败（期望 $sha，实得 $got）"
     say "SHA-256 校验通过"
   fi
-  # 全新 / 无载荷状态下 payload/node_modules 还不存在，而 mv **不会**自动建中间目录：
-  # 2026-11-13 实测，这一行让「自动升版」在干净状态必然失败
-  # （mv: cannot move ... to .../payload/node_modules/dsh-purge-community: No such file or directory）。
-  mkdir -p "$SELF/payload/node_modules"
   rm -rf "$SELF/payload/node_modules/$PKG"
   tar xzf "$tmp/plugin.tgz" -C "$tmp" || die "解包失败"
   mv "$tmp/package" "$SELF/payload/node_modules/$PKG" || die "无法替换载荷目录"
@@ -534,12 +607,15 @@ cmd_sync() {
     "$NODE" "$SELF/tools/patch-android-exec.mjs" "$SELF/payload/node_modules/$PKG" --node "$NODE" || \
       die "Android 执行器补丁未打上（载荷里的 spawn 锚点变了？看 tools/patch-android-exec.mjs 的锚点表）"
   fi
-  # 补齐 bundledDependencies（与 fetch-payload.sh 同口径）。sync 只解了插件本体，
-  # 载荷里若少了依赖，重打包出的 payload.tar.gz 与「fetch-payload.sh --pack」不一致，
-  # 换机时 install 会因为缺 yaml 装不起来。此刻插件目录已在场，fetch-payload.sh 会
-  # 跳过它、只补缺的那些依赖；依赖已存在则直接 skip（幂等）。
-  if [ -f "$SELF/fetch-payload.sh" ]; then
-    bash "$SELF/fetch-payload.sh" >&2 || say "  ! 依赖补齐失败（网络？）：载荷可能缺 bundledDependencies，换机前请重跑"
+  if [ -f "$SELF/tools/patch-refusal-retry.mjs" ]; then
+    "$NODE" "$SELF/tools/patch-refusal-retry.mjs" "$SELF/payload/node_modules/$PKG" || \
+      die "refusal-retry 修正未打上（锚点变了？看 tools/patch-refusal-retry.mjs）"
+  fi
+  if [ -f "$SELF/tools/test-refusal-retrain.mjs" ]; then
+    "$NODE" "$SELF/tools/test-refusal-retrain.mjs" "$SELF/payload/node_modules/$PKG" >/dev/null || \
+      die "罐头拒绝回归正控不过（新载荷的重试链没跑通）"
+    "$NODE" "$SELF/tools/test-refusal-retrain.mjs" "$SELF/payload/node_modules/$PKG" --neg=dispatch >/dev/null || \
+      die "罐头拒绝回归负控判据失效（上游形状竟然跑通了，先修脚本）"
   fi
   "$NODE" "$SELF/tools/pack-payload.mjs" > "$tmp/pack.json" || die "重打包失败"
   cat "$tmp/pack.json"
