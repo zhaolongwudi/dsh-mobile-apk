@@ -3,9 +3,9 @@
   "purpose": "把 Jet Hub（dsh-providers-hub）移植进 dsh-mobile-apk，并保证每日新构建物覆盖安装后仍在位",
   "package": {
     "name": "dsh-providers-hub",
-    "version": "2.33.261122",
+    "version": "2.35.261124",
     "integrity": "sha512-t3tOymIQnhAaC7bv2HP5+hlI1Q2FaEzeDDzkcTaNFiFOmw6JsKYXxf1z94d0O+uty+OF84lvNiVAL5Ri6CUUrw==",
-    "source": "https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-2.33.261122.tgz",
+    "source": "https://registry.npmjs.org/dsh-providers-hub/-/dsh-providers-hub-2.35.261124.tgz",
     "engines": "^22.19.0 || >=24.0.0"
   },
   "bundledDependencies": {
@@ -26,9 +26,9 @@
   "runtime": "dsh 0.2.2-rc.1（随 APK 快照）",
   "payload": {
     "file": "payload.tar.gz",
-    "sha256": "a37c4a8dda0fdd7c13a2b7fed4082faf1c6c38ecb46d136ad3b346b28a8ac7f1",
-    "bytes": 11146120,
-    "files": 1665,
+    "sha256": "dce643dfec00beddd765164565678449521808898cdd8a2ba2d45f35dc1fc41e",
+    "bytes": 11282867,
+    "files": 1685,
     "layout": "node_modules/"
   },
   "mount": {
@@ -54,7 +54,7 @@
     ],
     "fix": "各包自己的 port 脚本按自身 manifest 调 lockfix.mjs（用法同本 kit）；未补前 verify 第 8 段会持续 WARN"
   },
-  "verifiedAt": "2026-11-22T21:01:58.234Z",
+  "verifiedAt": "2026-11-25T01:33:21.120Z",
   "androidFixes": [
     {
       "id": "mobile-ui-overlay",
