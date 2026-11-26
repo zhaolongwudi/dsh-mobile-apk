@@ -2503,6 +2503,14 @@ function sessionIdOf(exec) {
   }
   return id;
 }
+function extractKeywords(content, n = 10) {
+  const freq = /* @__PURE__ */ new Map();
+  for (const t of tokenize(content)) {
+    if (/^[0-9]+$/.test(t)) continue;
+    freq.set(t, (freq.get(t) ?? 0) + 1);
+  }
+  return [...freq.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([t]) => t);
+}
 function similarity(a, b) {
   const sa = new Set(tokenize(a));
   const sb = new Set(tokenize(b));
@@ -2616,7 +2624,7 @@ function rememberTool(dir, privacy) {
     parameters: {
       type: "object",
       additionalProperties: false,
-      required: ["content", "project", "keywords", "importance"],
+      required: ["content", "project", "importance"],
       properties: {
         content: { type: "string", description: T("memory_remember.param.content") },
         level: {
@@ -2630,7 +2638,19 @@ function rememberTool(dir, privacy) {
         goal: { type: "string", description: T("memory_remember.param.goal") },
         importance: { type: "integer", default: 1, description: T("memory_remember.param.importance") },
         corrected: { type: "boolean", default: false, description: T("memory_remember.param.corrected") },
-        keywords: { type: "array", items: { type: "string" }, description: T("memory_remember.param.keywords") }
+        // #124：keywords 不再 required（缺失时 execute 自动 bigram 提取），且类型放宽
+        // anyOf [array, string]——deepseek-v4.1-flash 实测 9 次调用 0 次写出合法数组
+        //（5 次裸逗号列表/4 次逗号串），逗号串形态 normalizeKeywords 本就支持，schema
+        // 却只允许数组（实现宽容、schema 严格），参数在宿主 JSON.parse/校验阶段就判死。
+        // 注：裸逗号列表（非法 JSON）死在宿主解析层，schema 修不到——本放宽对它是
+        // 间接引导（string 合法 → 模型更可能写出带引号的合法形态）。
+        keywords: {
+          anyOf: [
+            { type: "array", items: { type: "string" } },
+            { type: "string" }
+          ],
+          description: T("memory_remember.param.keywords")
+        }
       }
     },
     output: {
@@ -2665,10 +2685,16 @@ function rememberTool(dir, privacy) {
       if (content.length === 0) throw new Error(L("remember.error.content"));
       const project = typeof parsed.project === "string" && parsed.project.trim() ? parsed.project.trim() : null;
       if (project === null) throw new Error(L("remember.error.project", { global: globalProjectMarker() }));
-      const keywords = normalizeKeywords(parsed.keywords);
+      let keywords = normalizeKeywords(parsed.keywords);
       if (keywords.length === 0) {
         const missing = parsed.keywords === void 0 || parsed.keywords === null || typeof parsed.keywords === "string" && parsed.keywords.trim() === "" || Array.isArray(parsed.keywords) && parsed.keywords.length === 0;
-        throw new Error(missing ? L("remember.error.keywords") : L("remember.error.keywordsEmpty", { received: describeArg(parsed.keywords) }));
+        if (missing) {
+          const auto = extractKeywords(content);
+          if (auto.length === 0) throw new Error(L("remember.error.keywords"));
+          keywords = auto;
+        } else {
+          throw new Error(L("remember.error.keywordsEmpty", { received: describeArg(parsed.keywords) }));
+        }
       }
       const importanceRaw = coerceNumber(parsed.importance);
       if (importanceRaw === void 0) throw new Error(L("remember.error.importance"));
@@ -3126,7 +3152,13 @@ function updateTool(dir, privacy) {
         importance: { type: "integer", description: T("memory_update.param.importance") },
         goal: { type: "string", description: T("memory_update.param.goal") },
         project: { type: "string", description: T("memory_update.param.project") },
-        keywords: { type: "array", items: { type: "string" }, description: T("memory_update.param.keywords") }
+        keywords: {
+          anyOf: [
+            { type: "array", items: { type: "string" } },
+            { type: "string" }
+          ],
+          description: T("memory_update.param.keywords")
+        }
       }
     },
     output: {

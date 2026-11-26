@@ -1,7 +1,7 @@
 {
   "kit": "meow-memory",
   "package": "meow-memory",
-  "version": "0.33.2",
+  "version": "0.33.3",
   "license": "MIT",
   "replaces": "dsh-memento",
   "installedAt": "2026-11-14T21:35:53.887Z",
@@ -14,12 +14,12 @@
     "runtimeDependencies": 0
   },
   "source": {
-    "registry": "https://registry.npmjs.org/meow-memory/-/meow-memory-0.33.2.tgz",
-    "integrity": "sha512-3yCNLVn9TMUnZH/yr73leM0eSHsWc4Ol9oRSN5CRATdpn85bKztYnTZWvysfbxs304WsVWThYBAcfaSPrL4SLw==",
-    "shasum": "5b48b99364142544fa05d7c5ee3e760963622448",
+    "registry": "https://registry.npmjs.org/meow-memory/-/meow-memory-0.33.3.tgz",
+    "integrity": "sha512-5ikTqGan6q4aKlN7VlxTFQtMxDaS1FDu0DffaZIfKYbXgWxdOPJffFd1/AqyVXNWgQGBIiz7eTC4pEcNzt0B3A==",
+    "shasum": "42c0b02a96f78ab89776f84e54bc8a477fdfd889",
     "repo": "https://github.com/Phant0Meow/dsh-meow-memory",
-    "offlineTarball": "pkg/meow-memory-0.33.2.tgz",
-    "offlineSha256": "0f61a358b0bf12a469921911a0a76cee898171a9ca17f5926bb4dbcd93ed2e2e"
+    "offlineTarball": "pkg/meow-memory-0.33.3.tgz",
+    "offlineSha256": "788514f216da52e81e670e0517e04c806189bce86740a0cf92e6e6ba4f440e41"
   },
   "landing": {
     "package": "$DSH_HOME/profiles/web/node_modules/meow-memory",
@@ -95,5 +95,5 @@
     "hotReload": "配置层（cordis.patch.yml）用 plugin_manager disable→enable 当场生效；代码层（node_modules）需重启（ESM 缓存 + 宿主 no-hmr）",
     "incident20261112": "记忆库漂移事故已修复：主库 32 条（24 条原有 + 8 条抢救），嵌套库差集核对无缺失后清理，冷备在 $DSH_HOME/fix-backup-*/"
   },
-  "verifiedAt": "2026-11-22T21:02:25.435Z"
+  "verifiedAt": "2026-11-26T03:37:30.393Z"
 }
